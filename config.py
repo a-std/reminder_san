@@ -36,16 +36,8 @@ TIMEZONE = "Asia/Tokyo"
 # スケジューラ設定
 SCHEDULER_CHECK_INTERVAL_SEC = 30  # リマインダーチェック間隔
 
-# デフォルト時刻設定（曖昧な表現の解釈用）
-DEFAULT_TIMES = {
-    "朝": "08:00",
-    "昼": "12:00",
-    "昼頃": "12:00",
-    "午後": "14:00",
-    "夕方": "17:00",
-    "夜": "20:00",
-    "深夜": "23:00",
-}
+# ログ設定
+LOGS_DIR = BASE_DIR / "logs"
 
 # 専用チャンネル設定（DiscordのチャンネルID）
 REMINDER_CHANNEL_ID = get_env("REMINDER_CHANNEL_ID", required=False)

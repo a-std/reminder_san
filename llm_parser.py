@@ -1,8 +1,7 @@
 """Gemini APIで自然言語を解析するモジュール"""
 
-import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import google.generativeai as genai
@@ -138,8 +137,8 @@ async def parse_reminder_input(user_input: str) -> dict | None:
                                 remind_at = remind_at.replace(tzinfo=tz)
                         except ValueError:
                             logger.warning(f"日時パース失敗: {dt_str}")
-                            remind_at = now.replace(
-                                hour=now.hour + 1, minute=0, second=0, microsecond=0
+                            remind_at = (now + timedelta(hours=1)).replace(
+                                minute=0, second=0, microsecond=0
                             )
 
                         result = {
@@ -161,40 +160,4 @@ async def parse_reminder_input(user_input: str) -> dict | None:
 
     except Exception as e:
         logger.error(f"LLM解析エラー: {e}")
-        return None
-
-
-async def interpret_snooze(user_input: str) -> int | None:
-    """
-    スヌーズ入力を解析して分数を返す
-
-    Args:
-        user_input: 「5分後」「1時間後」「明日」など
-
-    Returns:
-        スヌーズする分数、または解析失敗時はNone
-    """
-    try:
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        prompt = f"""以下の入力から、スヌーズする時間を分単位の整数で答えてください。
-数字のみを出力してください。
-
-入力: {user_input}
-
-例:
-- 「5分後」→ 5
-- 「30分」→ 30
-- 「1時間後」→ 60
-- 「2時間」→ 120
-- 「明日」→ 1440
-- 「1日」→ 1440
-"""
-        response = model.generate_content(prompt)
-        if response.text:
-            minutes = int(response.text.strip())
-            if 1 <= minutes <= 10080:  # 最大7日
-                return minutes
-        return None
-    except Exception as e:
-        logger.error(f"スヌーズ解析エラー: {e}")
         return None

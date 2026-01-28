@@ -275,7 +275,12 @@ class ReminderListView(discord.ui.View):
             await interaction.response.send_message("他のユーザーのリマインダーは操作できません。", ephemeral=True)
             return
 
-        reminder_id = int(interaction.data["values"][0])
+        values = interaction.data.get("values", []) if interaction.data else []
+        if not values:
+            await interaction.response.send_message("選択されていません。", ephemeral=True)
+            return
+
+        reminder_id = int(values[0])
         deleted = await delete_reminder(reminder_id, self.user_id)
 
         if deleted:

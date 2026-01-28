@@ -64,8 +64,8 @@ class ReminderScheduler:
         if not channel:
             try:
                 channel = await self.bot.fetch_channel(channel_id)
-            except discord.NotFound:
-                logger.warning(f"チャンネルが見つかりません: {channel_id}")
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
+                logger.warning(f"チャンネル取得失敗: {channel_id}, error={e}")
                 await deactivate_reminder(reminder["id"])
                 return
 
