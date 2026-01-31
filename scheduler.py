@@ -48,12 +48,21 @@ class ReminderScheduler:
         now = datetime.now(self.tz)
         due_reminders = await get_due_reminders(now)
 
+        if not due_reminders:
+            return
+
         for reminder in due_reminders:
             try:
                 await self.send_reminder(reminder)
                 await self.handle_after_send(reminder)
             except Exception as e:
                 logger.error(f"リマインダー送信エラー (ID={reminder['id']}): {e}")
+
+        # 全リマインダー処理後に常設リストを1回だけ更新
+        try:
+            await self.bot.update_persistent_list()
+        except Exception as e:
+            logger.error(f"常設リスト更新エラー: {e}")
 
     async def send_reminder(self, reminder: dict):
         """リマインダーを送信"""
@@ -76,7 +85,7 @@ class ReminderScheduler:
             color=discord.Color.blue(),
             timestamp=datetime.now(self.tz),
         )
-        embed.set_footer(text=f"ID: {reminder['id']}")
+        embed.set_footer(text="リマインダー通知")
 
         # 繰り返し情報を追加
         if reminder.get("repeat_type"):
@@ -84,7 +93,7 @@ class ReminderScheduler:
             embed.add_field(name="繰り返し", value=repeat_text, inline=True)
 
         # スヌーズボタンを作成
-        view = SnoozeView(reminder["id"])
+        view = SnoozeView(reminder["id"], bot=self.bot)
 
         try:
             await channel.send(
@@ -104,20 +113,19 @@ class ReminderScheduler:
         if not repeat_type or repeat_type == "none":
             # 繰り返しなし → 非アクティブ化
             await deactivate_reminder(reminder["id"])
-            return
-
-        # 繰り返しあり → 次回日時を計算
-        current_time = datetime.fromisoformat(reminder["remind_at"])
-        if current_time.tzinfo is None:
-            current_time = current_time.replace(tzinfo=self.tz)
-
-        next_time = self._calculate_next_time(current_time, repeat_type, reminder.get("repeat_value"))
-
-        if next_time:
-            await update_reminder_time(reminder["id"], next_time)
-            logger.info(f"次回リマインダー更新: ID={reminder['id']}, next={next_time}")
         else:
-            await deactivate_reminder(reminder["id"])
+            # 繰り返しあり → 次回日時を計算
+            current_time = datetime.fromisoformat(reminder["remind_at"])
+            if current_time.tzinfo is None:
+                current_time = current_time.replace(tzinfo=self.tz)
+
+            next_time = self._calculate_next_time(current_time, repeat_type, reminder.get("repeat_value"))
+
+            if next_time:
+                await update_reminder_time(reminder["id"], next_time)
+                logger.info(f"次回リマインダー更新: ID={reminder['id']}, next={next_time}")
+            else:
+                await deactivate_reminder(reminder["id"])
 
     def _calculate_next_time(
         self, current: datetime, repeat_type: str, repeat_value: str | None
@@ -182,9 +190,10 @@ class ReminderScheduler:
 class SnoozeView(discord.ui.View):
     """スヌーズボタンのView"""
 
-    def __init__(self, reminder_id: int):
+    def __init__(self, reminder_id: int, bot: discord.Client | None = None):
         super().__init__(timeout=86400)  # 24時間有効
         self.reminder_id = reminder_id
+        self.bot = bot
 
     @discord.ui.button(label="5分後", style=discord.ButtonStyle.secondary)
     async def snooze_5min(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -216,6 +225,13 @@ class SnoozeView(discord.ui.View):
             item.disabled = True
         await interaction.message.edit(view=self)
 
+        # 常設リストを更新
+        if self.bot and hasattr(self.bot, "update_persistent_list"):
+            try:
+                await self.bot.update_persistent_list()
+            except Exception as e:
+                logger.error(f"常設リスト更新エラー: {e}")
+
     async def _snooze(self, interaction: discord.Interaction, minutes: int):
         from database import snooze_reminder
 
@@ -228,6 +244,12 @@ class SnoozeView(discord.ui.View):
                 f"リマインダーを {new_time.strftime('%m/%d %H:%M')} に再通知します。",
                 ephemeral=True,
             )
+            # 常設リストを更新
+            if self.bot and hasattr(self.bot, "update_persistent_list"):
+                try:
+                    await self.bot.update_persistent_list()
+                except Exception as e:
+                    logger.error(f"常設リスト更新エラー: {e}")
         else:
             await interaction.response.send_message(
                 "スヌーズに失敗しました。",

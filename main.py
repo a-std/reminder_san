@@ -36,17 +36,44 @@ logger = logging.getLogger(__name__)
 
 
 def main():
-    """メインエントリーポイント"""
-    logger.info("リマインダーBot起動中...")
+    """メインエントリーポイント（クラッシュ時自動再起動）"""
+    import time
 
-    try:
-        from bot import run_bot
-        run_bot()
-    except KeyboardInterrupt:
-        logger.info("Bot停止（Ctrl+C）")
-    except Exception as e:
-        logger.error(f"致命的エラー: {e}", exc_info=True)
-        raise
+    max_retries = 5
+    retry_window = 300  # 5分以内に連続クラッシュしたらカウント
+    retry_count = 0
+    last_crash = 0
+
+    while True:
+        logger.info("リマインダーBot起動中...")
+        start_time = time.time()
+
+        try:
+            from bot import run_bot
+            run_bot()
+            # 正常終了
+            break
+        except KeyboardInterrupt:
+            logger.info("Bot停止（Ctrl+C）")
+            break
+        except Exception as e:
+            now = time.time()
+            logger.error(f"致命的エラー: {e}", exc_info=True)
+
+            # 長時間動いていたらカウントリセット
+            if now - last_crash > retry_window:
+                retry_count = 0
+
+            retry_count += 1
+            last_crash = now
+
+            if retry_count >= max_retries:
+                logger.error(f"連続{max_retries}回クラッシュのため停止")
+                break
+
+            wait = min(30, 5 * retry_count)
+            logger.info(f"{wait}秒後に再起動... (試行 {retry_count}/{max_retries})")
+            time.sleep(wait)
 
 
 if __name__ == "__main__":

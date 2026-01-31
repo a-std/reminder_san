@@ -230,19 +230,25 @@ class ReminderBot(commands.Bot):
 
         logger.info(f"常設リスト更新: {len(reminders)}件, view_children={len(view.children) if view else 0}")
 
-        # 保存済みメッセージIDを取得してedit、なければ新規作成
+        # 保存済みメッセージIDを取得
         saved_message_id = await get_bot_state("list_message_id")
 
         if saved_message_id:
             try:
                 msg = await channel.fetch_message(int(saved_message_id))
-                await msg.edit(embed=embed, view=view)
-                logger.info(f"常設リスト編集完了: message_id={msg.id}")
-                return
+                # 最新メッセージか判定: 最下部ならedit、埋もれていたら削除→再作成
+                last_message = channel.last_message or await channel.fetch_message(channel.last_message_id)
+                if last_message and last_message.id == msg.id:
+                    await msg.edit(embed=embed, view=view)
+                    logger.info(f"常設リスト編集完了（最下部）: message_id={msg.id}")
+                    return
+                else:
+                    await msg.delete()
+                    logger.info("常設メッセージが埋もれているため削除→再作成")
             except discord.NotFound:
                 logger.info("常設メッセージが見つからないため新規作成")
             except discord.HTTPException as e:
-                logger.warning(f"常設メッセージ編集失敗: {e}")
+                logger.warning(f"常設メッセージ更新失敗: {e}")
 
         # 新規作成
         msg = await channel.send(embed=embed, view=view)

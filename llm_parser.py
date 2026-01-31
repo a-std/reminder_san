@@ -63,25 +63,29 @@ def parse_datetime_pattern(user_input: str, now: datetime, tz: ZoneInfo) -> date
         m = re.search(r'午前\s*(\d+)\s*時', t)
         if m:
             return int(m.group(1))
-        # X時半
-        m = re.search(r'(\d+)\s*時\s*半', t)
-        if m:
-            return int(m.group(1))  # 分は別途処理
-        # X時Y分
+        # X時半 / X時Y分 / X時
         m = re.search(r'(\d+)\s*時', t)
         if m:
-            return int(m.group(1))
-        # 朝昼夕夜
+            h = int(m.group(1))
+            # 昼/夕方/夜のコンテキストがあれば1〜11時をPMに補正
+            is_pm_context = any(w in t for w in ['昼', '夕方', '夜', '深夜'])
+            is_am_context = '朝' in t
+            if is_pm_context and not is_am_context and 1 <= h <= 11:
+                h += 12
+            return h
+        # 朝昼夕夜（時刻指定なし）— 長いキーワードを先にチェック
         if '朝' in t:
             return 8
-        if '昼' in t or '正午' in t or 'お昼' in t:
+        if '正午' in t or 'お昼' in t:
+            return 12
+        if '昼' in t:
             return 12
         if '夕方' in t:
             return 17
-        if '夜' in t:
-            return 20
         if '深夜' in t:
             return 23
+        if '夜' in t:
+            return 20
         return default
 
     def extract_minute(t: str) -> int:
@@ -339,27 +343,44 @@ def parse_datetime_pattern(user_input: str, now: datetime, tz: ZoneInfo) -> date
 
 def extract_content(user_input: str) -> str:
     """ユーザー入力から日時表現を除去してcontentを抽出"""
+    # 末尾の助詞パターン（までに、に、から、まで、で、の）
+    _p = r'(までに|に|から|まで|で|の)?'
+    # 時刻コンテキスト語（長い語を先に）
+    _t = r'(朝イチ|朝|夕方|深夜|夜|昼|正午|お昼)'
+
+    # 日付のみ（時刻なし）のパターンは助詞を食わない
+    # 日付+時刻があるパターンのみ末尾助詞を除去
     patterns = [
-        r'\d+\s*時間\s*半?\s*後\s*に?',
-        r'\d+\s*分\s*後\s*に?',
-        r'あと\s*\d+\s*(分|時間)\s*に?',
-        r'明々?後?日\s*の?\s*(朝|昼|夕方|夜)?\s*\d*\s*時?\s*半?\s*\d*\s*分?\s*に?',
-        r'今日\s*の?\s*(朝|昼|夕方|夜)?\s*\d*\s*時?\s*半?\s*\d*\s*分?\s*に?',
-        r'(今|来|再来)週\s*(末|の?\s*[月火水木金土日]\s*曜?日?)?\s*(の?\s*(朝|昼|夕方|夜))?\s*\d*\s*時?\s*半?\s*に?',
-        r'(次|今度)\s*の?\s*[月火水木金土日]\s*曜?日?\s*(の?\s*(朝|昼|夕方|夜))?\s*\d*\s*時?\s*半?\s*に?',
-        r'(今|来)?月\s*(末|初)?\s*\d*\s*時?\s*に?',
-        r'\d+\s*月\s*\d+\s*日\s*(の?\s*(朝|昼|夕方|夜))?\s*\d*\s*時?\s*半?\s*\d*\s*分?\s*に?',
-        r'午前\s*\d+\s*時\s*半?\s*\d*\s*分?\s*に?',
-        r'午後\s*\d+\s*時\s*半?\s*\d*\s*分?\s*に?',
-        r'\d+\s*時\s*半?\s*\d*\s*分?\s*に?',
-        r'(朝|昼|夕方|夜|正午|お昼|深夜)\s*に?',
-        r'週末\s*に?',
+        rf'\d+\s*時間\s*半?\s*後\s*{_p}',
+        rf'\d+\s*分\s*後\s*{_p}',
+        rf'あと\s*\d+\s*(分|時間)\s*{_p}',
+        # 明日/今日 + 時刻あり → 助詞除去
+        rf'明々?後?日\s*の?\s*{_t}?\s*\d+\s*時\s*半?\s*\d*\s*分?\s*{_p}',
+        rf'今日\s*の?\s*{_t}?\s*\d+\s*時\s*半?\s*\d*\s*分?\s*{_p}',
+        # 明日/今日 + 朝昼夕夜のみ → 助詞除去
+        rf'明々?後?日\s*の?\s*{_t}\s*{_p}',
+        rf'今日\s*の?\s*{_t}\s*{_p}',
+        # 明日/今日のみ（時刻なし）→ 「の」は後に時刻語が続く場合のみ除去
+        r'明々?後?日(\s*の(?=\s*(\d|朝|昼|夕|夜|午)))?\s*',
+        r'今日(\s*の(?=\s*(\d|朝|昼|夕|夜|午)))?\s*',
+        rf'(今|来|再来)週\s*(末|の?\s*[月火水木金土日]\s*曜?日?)?\s*(の?\s*{_t})?\s*\d*\s*時?\s*半?\s*{_p}',
+        rf'(次|今度)\s*の?\s*[月火水木金土日]\s*曜?日?\s*(の?\s*{_t})?\s*\d*\s*時?\s*半?\s*{_p}',
+        # X月X日を先に処理（「(今|来)?月」が「2月」の月を食わないように）
+        rf'\d+\s*月\s*\d+\s*日\s*(の?\s*{_t})?\s*\d*\s*時?\s*半?\s*\d*\s*分?\s*{_p}',
+        rf'(今|来)?月\s*(末|初)?\s*の?\s*{_t}?\s*\d*\s*時?\s*{_p}',
+        rf'午前\s*\d+\s*時\s*半?\s*\d*\s*分?\s*{_p}',
+        rf'午後\s*\d+\s*時\s*半?\s*\d*\s*分?\s*{_p}',
+        rf'\d+\s*時\s*半?\s*\d*\s*分?\s*{_p}',
+        rf'{_t}\s*{_p}',
+        rf'週末\s*{_p}',
     ]
 
     content = normalize_numbers(user_input)
     for pattern in patterns:
         content = re.sub(pattern, '', content)
 
+    # 除去後に残った先頭の孤立助詞を除去（直後にスペースがある場合のみ）
+    content = re.sub(r'^[のにでへ]\s+', '', content)
     content = re.sub(r'\s+', ' ', content).strip()
     return content if content else user_input
 
