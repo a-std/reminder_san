@@ -85,6 +85,10 @@ class ReminderBot(commands.Bot):
 
     async def handle_reminder_message(self, message: discord.Message):
         """専用チャンネルのメッセージを処理"""
+        import time
+        start_time = time.time()
+        logger.info(f"メッセージ受信: {message.content[:50]}")
+
         content = message.content.strip()
 
         # 特殊コマンドチェック
@@ -103,6 +107,8 @@ class ReminderBot(commands.Bot):
                 delete_after=10,
             )
             return
+
+        logger.info(f"解析完了: content={result['content']}, datetime={result['datetime']}, 処理時間={time.time()-start_time:.2f}秒")
 
         # 確認画面を表示
         view = ConfirmReminderView(
@@ -131,9 +137,12 @@ class ReminderBot(commands.Bot):
             color=discord.Color.blue(),
         )
 
+        weekday_ja = ["月", "火", "水", "木", "金", "土", "日"]
+
         for r in reminders[:10]:
             remind_at = datetime.fromisoformat(r["remind_at"])
-            time_str = remind_at.strftime("%m/%d %H:%M")
+            weekday = weekday_ja[remind_at.weekday()]
+            time_str = f"{remind_at.strftime('%m/%d')} ({weekday}) {remind_at.strftime('%H:%M')}"
 
             value = f"🕐 {time_str}"
             if r.get("repeat_type") and r["repeat_type"] != "none":
@@ -186,6 +195,9 @@ class ConfirmReminderView(discord.ui.View):
 
     def create_confirm_embed(self) -> discord.Embed:
         """確認用Embedを作成"""
+        weekday_ja = ["月", "火", "水", "木", "金", "土", "日"]
+        weekday = weekday_ja[self.remind_at.weekday()]
+
         embed = discord.Embed(
             title="📝 リマインダー確認",
             color=discord.Color.yellow(),
@@ -193,7 +205,7 @@ class ConfirmReminderView(discord.ui.View):
         embed.add_field(name="内容", value=self.content, inline=False)
         embed.add_field(
             name="日時",
-            value=self.remind_at.strftime("%Y/%m/%d %H:%M"),
+            value=f"{self.remind_at.strftime('%Y/%m/%d')} ({weekday}) {self.remind_at.strftime('%H:%M')}",
             inline=True,
         )
 
@@ -205,7 +217,7 @@ class ConfirmReminderView(discord.ui.View):
 
         return embed
 
-    @discord.ui.button(label="登録", style=discord.ButtonStyle.success, emoji="✅")
+    @discord.ui.button(label="登録", style=discord.ButtonStyle.success)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         if str(interaction.user.id) != self.user_id:
             await interaction.response.send_message("他のユーザーのリマインダーは操作できません。", ephemeral=True)
@@ -221,6 +233,9 @@ class ConfirmReminderView(discord.ui.View):
             repeat_value=self.repeat_value,
         )
 
+        weekday_ja = ["月", "火", "水", "木", "金", "土", "日"]
+        weekday = weekday_ja[self.remind_at.weekday()]
+
         embed = discord.Embed(
             title="✅ 登録完了",
             description=self.content,
@@ -228,7 +243,7 @@ class ConfirmReminderView(discord.ui.View):
         )
         embed.add_field(
             name="通知日時",
-            value=self.remind_at.strftime("%Y/%m/%d %H:%M"),
+            value=f"{self.remind_at.strftime('%Y/%m/%d')} ({weekday}) {self.remind_at.strftime('%H:%M')}",
             inline=True,
         )
         embed.set_footer(text=f"ID: {reminder_id}")
@@ -238,13 +253,90 @@ class ConfirmReminderView(discord.ui.View):
 
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label="キャンセル", style=discord.ButtonStyle.secondary, emoji="❌")
+    @discord.ui.button(label="日時変更", style=discord.ButtonStyle.primary)
+    async def change_time(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if str(interaction.user.id) != self.user_id:
+            await interaction.response.send_message("他のユーザーのリマインダーは操作できません。", ephemeral=True)
+            return
+
+        modal = DateTimeModal(self)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="キャンセル", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         if str(interaction.user.id) != self.user_id:
             await interaction.response.send_message("他のユーザーのリマインダーは操作できません。", ephemeral=True)
             return
 
         await interaction.message.delete()
+
+
+class DateTimeModal(discord.ui.Modal, title="日時変更"):
+    """日時変更用モーダル"""
+
+    date_input = discord.ui.TextInput(
+        label="日付 (例: 2026/01/29 または 明日)",
+        placeholder="2026/01/29",
+        required=True,
+        max_length=20,
+    )
+    time_input = discord.ui.TextInput(
+        label="時刻 (例: 18:00)",
+        placeholder="18:00",
+        required=True,
+        max_length=10,
+    )
+
+    def __init__(self, parent_view: ConfirmReminderView):
+        super().__init__()
+        self.parent_view = parent_view
+        # 現在の値をデフォルトに設定
+        self.date_input.default = parent_view.remind_at.strftime("%Y/%m/%d")
+        self.time_input.default = parent_view.remind_at.strftime("%H:%M")
+
+    async def on_submit(self, interaction: discord.Interaction):
+        from llm_parser import parse_reminder_input
+
+        # 入力を解析
+        date_str = self.date_input.value
+        time_str = self.time_input.value
+
+        # まず直接パースを試みる
+        tz = ZoneInfo(TIMEZONE)
+        try:
+            # 標準形式でパース
+            if "/" in date_str:
+                parts = date_str.split("/")
+                if len(parts) == 3:
+                    year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
+                elif len(parts) == 2:
+                    year = datetime.now(tz).year
+                    month, day = int(parts[0]), int(parts[1])
+                else:
+                    raise ValueError("Invalid date format")
+            else:
+                raise ValueError("Use LLM")
+
+            time_parts = time_str.split(":")
+            hour, minute = int(time_parts[0]), int(time_parts[1]) if len(time_parts) > 1 else 0
+
+            new_datetime = datetime(year, month, day, hour, minute, tzinfo=tz)
+        except (ValueError, IndexError):
+            # LLMで解析
+            result = await parse_reminder_input(f"{date_str} {time_str}に予定")
+            if result:
+                new_datetime = result["datetime"]
+            else:
+                await interaction.response.send_message(
+                    "日時を解析できませんでした。「2026/01/29 18:00」形式で入力してください。",
+                    ephemeral=True,
+                )
+                return
+
+        # 親Viewを更新
+        self.parent_view.remind_at = new_datetime
+        embed = self.parent_view.create_confirm_embed()
+        await interaction.response.edit_message(embed=embed, view=self.parent_view)
 
 
 class ReminderListView(discord.ui.View):
@@ -280,13 +372,15 @@ class ReminderListView(discord.ui.View):
             await interaction.response.send_message("選択されていません。", ephemeral=True)
             return
 
+        await interaction.response.defer()
+
         reminder_id = int(values[0])
         deleted = await delete_reminder(reminder_id, self.user_id)
 
         if deleted:
-            await interaction.response.send_message(f"ID: {reminder_id} を削除しました。")
+            await interaction.followup.send(f"ID: {reminder_id} を削除しました。")
         else:
-            await interaction.response.send_message("削除に失敗しました。", ephemeral=True)
+            await interaction.followup.send("削除に失敗しました。", ephemeral=True)
 
 
 def run_bot():

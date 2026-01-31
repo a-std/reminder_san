@@ -25,7 +25,8 @@ def get_env(key: str, required: bool = True) -> str:
 
 # 環境変数
 DISCORD_BOT_TOKEN = get_env("DISCORD_BOT_TOKEN")
-GEMINI_API_KEY = get_env("GEMINI_API_KEY")
+GEMINI_API_KEY = get_env("GEMINI_API_KEY", required=False)
+GROQ_API_KEY = get_env("GROQ_API_KEY", required=False)
 
 # パス
 DB_PATH = BASE_DIR / "reminders.db"
