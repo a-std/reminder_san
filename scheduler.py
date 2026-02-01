@@ -233,9 +233,13 @@ class ReminderScheduler:
             "weekdays": "平日",
         }
         base = type_map.get(repeat_type, repeat_type)
-        if repeat_value:
-            return f"{base} ({repeat_value})"
-        return base
+        if not repeat_value:
+            return base
+        if repeat_type == "monthly":
+            if repeat_value.isdigit():
+                return f"毎月{repeat_value}日"
+            return f"毎月{repeat_value}"
+        return f"{base}{repeat_value}"
 
 
 class SnoozeView(discord.ui.View):

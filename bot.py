@@ -41,6 +41,20 @@ REPEAT_TYPE_MAP = {
 }
 
 
+def format_repeat_label(repeat_type: str, repeat_value: str | None = None) -> str:
+    """繰り返し設定を表示用ラベルにフォーマット"""
+    base = REPEAT_TYPE_MAP.get(repeat_type, repeat_type)
+    if not repeat_value:
+        return base
+    # monthly: "毎月" + repeat_value を自然に結合
+    if repeat_type == "monthly":
+        if repeat_value.isdigit():
+            return f"毎月{repeat_value}日"
+        return f"毎月{repeat_value}"
+    # weekly/biweekly: "毎週水曜" / "隔週水曜"
+    return f"{base}{repeat_value}"
+
+
 class ReminderBot(commands.Bot):
     """リマインダーBot"""
 
@@ -210,11 +224,7 @@ class ReminderBot(commands.Bot):
 
                 line = f"**{r['content'][:50]}**\n🕐 {time_str}"
                 if r.get("repeat_type") and r["repeat_type"] != "none":
-                    repeat_label = REPEAT_TYPE_MAP.get(r["repeat_type"], r["repeat_type"])
-                    if r.get("repeat_value"):
-                        repeat_label += f" {r['repeat_value']}"
-                    line += f"  🔁 {repeat_label}"
-                line += f"  👤 <@{r['user_id']}>"
+                    line += f"  🔁 {format_repeat_label(r['repeat_type'], r.get('repeat_value'))}"
                 lines.append(line)
 
             embed.description = "\n\n".join(lines)
@@ -308,10 +318,7 @@ class ConfirmReminderView(discord.ui.View):
         )
 
         if self.repeat_type and self.repeat_type != "none":
-            repeat_label = REPEAT_TYPE_MAP.get(self.repeat_type, self.repeat_type)
-            if self.repeat_value:
-                repeat_label += f" {self.repeat_value}"
-            embed.add_field(name="繰り返し", value=f"🔁 {repeat_label}", inline=True)
+            embed.add_field(name="繰り返し", value=f"🔁 {format_repeat_label(self.repeat_type, self.repeat_value)}", inline=True)
 
         return embed
 
@@ -563,10 +570,7 @@ class ReminderActionView(discord.ui.View):
         embed.add_field(name="日時", value=f"🕐 {time_str}", inline=True)
 
         if self.reminder.get("repeat_type") and self.reminder["repeat_type"] != "none":
-            repeat_label = REPEAT_TYPE_MAP.get(self.reminder["repeat_type"], self.reminder["repeat_type"])
-            if self.reminder.get("repeat_value"):
-                repeat_label += f" {self.reminder['repeat_value']}"
-            embed.add_field(name="繰り返し", value=f"🔁 {repeat_label}", inline=True)
+            embed.add_field(name="繰り返し", value=f"🔁 {format_repeat_label(self.reminder['repeat_type'], self.reminder.get('repeat_value'))}", inline=True)
 
         return embed
 
