@@ -11,6 +11,7 @@ from openai import OpenAI
 from config import GROQ_API_KEY, TIMEZONE
 
 logger = logging.getLogger(__name__)
+llm_fallback_logger = logging.getLogger("llm_fallback")
 
 # Groqクライアント
 client = OpenAI(
@@ -47,57 +48,258 @@ def normalize_numbers(text: str) -> str:
     return text
 
 
+WEEKDAY_MAP = {'月': 0, '火': 1, '水': 2, '木': 3, '金': 4, '土': 5, '日': 6}
+WEEKDAY_NAMES = ['月', '火', '水', '木', '金', '土', '日']
+
+
+def extract_hour(t: str, default: int = 9) -> int:
+    """テキストから時刻を抽出"""
+    # 午後X時
+    m = re.search(r'午後\s*(\d+)\s*時', t)
+    if m:
+        h = int(m.group(1))
+        return h + 12 if h < 12 else h
+    # 午前X時
+    m = re.search(r'午前\s*(\d+)\s*時', t)
+    if m:
+        return int(m.group(1))
+    # X時半 / X時Y分 / X時
+    m = re.search(r'(\d+)\s*時', t)
+    if m:
+        h = int(m.group(1))
+        # 昼/夕方/夜のコンテキストがあれば1〜11時をPMに補正
+        is_pm_context = any(w in t for w in ['昼', '夕方', '夜', '深夜'])
+        is_am_context = '朝' in t
+        if is_pm_context and not is_am_context and 1 <= h <= 11:
+            h += 12
+        return h
+    # 朝昼夕夜（時刻指定なし）— 長いキーワードを先にチェック
+    if '朝' in t:
+        return 8
+    if '正午' in t or 'お昼' in t:
+        return 12
+    if '昼' in t:
+        return 12
+    if '夕方' in t:
+        return 17
+    if '深夜' in t:
+        return 23
+    if '夜' in t:
+        return 20
+    return default
+
+
+def extract_minute(t: str) -> int:
+    """テキストから分を抽出"""
+    # X時半
+    if re.search(r'\d+\s*時\s*半', t):
+        return 30
+    # X時Y分
+    m = re.search(r'\d+\s*時\s*(\d+)\s*分', t)
+    if m:
+        return int(m.group(1))
+    return 0
+
+
+def parse_repeat_pattern(user_input: str, now: datetime, tz: ZoneInfo) -> dict | None:
+    """繰り返し表現をパターンマッチで解析
+
+    Returns:
+        {"repeat_type": str, "repeat_value": str|None, "remind_at": datetime} or None
+    """
+    text = normalize_numbers(user_input)
+    # contentを除去した日時表現部分のみから時刻を抽出する
+    content = extract_content(user_input)
+    time_text = text.replace(content, '') if content != user_input else text
+
+    def make_dt(base_date: datetime, hour: int, minute: int) -> datetime:
+        return base_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+    def next_weekday_date(target_wd: int) -> datetime:
+        """次の指定曜日の日付を返す（今日が該当曜日なら来週）"""
+        days_ahead = target_wd - now.weekday()
+        if days_ahead <= 0:
+            days_ahead += 7
+        return now + timedelta(days=days_ahead)
+
+    def nth_weekday_of_month(year: int, month: int, nth: int, weekday: int) -> datetime | None:
+        """指定月の第N X曜日を計算。存在しなければNone"""
+        # 1日の曜日
+        first = datetime(year, month, 1, tzinfo=tz)
+        # 第1 X曜日
+        days_ahead = weekday - first.weekday()
+        if days_ahead < 0:
+            days_ahead += 7
+        first_target = first + timedelta(days=days_ahead)
+        # 第N
+        result = first_target + timedelta(weeks=nth - 1)
+        if result.month != month:
+            return None
+        return result
+
+    def next_month_year(y: int, m: int):
+        nm = m + 1
+        ny = y
+        if nm > 12:
+            nm = 1
+            ny += 1
+        return ny, nm
+
+    def find_next_nth_weekday(nths: list[int], weekday: int, offset_days: int = 0) -> datetime | None:
+        """複数の第N指定から、now以降の最も近い日を返す"""
+        hour = extract_hour(time_text, default=9)
+        minute = extract_minute(time_text)
+        candidates = []
+        # 今月と来月から候補を集める
+        for y, m_val in [(now.year, now.month), (*next_month_year(now.year, now.month),)]:
+            for n in nths:
+                target = nth_weekday_of_month(y, m_val, n, weekday)
+                if target is not None:
+                    dt = make_dt(target + timedelta(days=offset_days), hour, minute)
+                    if dt > now:
+                        candidates.append(dt)
+        if candidates:
+            return min(candidates)
+        return None
+
+    # 毎月第N(,N) X曜日の前日（複数対応）
+    m = re.search(r'毎月\s*第\s*([\d,、]+)\s*([月火水木金土日])\s*曜?日?\s*の?\s*前日', text)
+    if m:
+        nths = [int(n) for n in re.split(r'[,、]', m.group(1)) if n.strip()]
+        wd_name = m.group(2)
+        target_wd = WEEKDAY_MAP[wd_name]
+        remind_at = find_next_nth_weekday(nths, target_wd, offset_days=-1)
+        if remind_at is None:
+            return None
+        nth_str = ",".join(str(n) for n in nths)
+        return {"repeat_type": "monthly", "repeat_value": f"第{nth_str}{wd_name}の前日", "remind_at": remind_at}
+
+    # 毎月第N(,N) X曜日（複数対応）
+    m = re.search(r'毎月\s*第\s*([\d,、]+)\s*([月火水木金土日])\s*曜?日?', text)
+    if m:
+        nths = [int(n) for n in re.split(r'[,、]', m.group(1)) if n.strip()]
+        wd_name = m.group(2)
+        target_wd = WEEKDAY_MAP[wd_name]
+        remind_at = find_next_nth_weekday(nths, target_wd)
+        if remind_at is None:
+            return None
+        nth_str = ",".join(str(n) for n in nths)
+        return {"repeat_type": "monthly", "repeat_value": f"第{nth_str}{wd_name}", "remind_at": remind_at}
+
+    # 毎月X日
+    m = re.search(r'毎月\s*(\d+)\s*日', text)
+    if m:
+        day = int(m.group(1))
+        hour = extract_hour(time_text, default=9)
+        minute = extract_minute(time_text)
+        # 今月の指定日
+        try:
+            remind_at = make_dt(now.replace(day=day), hour, minute)
+        except ValueError:
+            # 日付が無効（31日がない月等）→ 来月
+            next_month = now.month + 1
+            year = now.year
+            if next_month > 12:
+                next_month = 1
+                year += 1
+            remind_at = make_dt(datetime(year, next_month, day, tzinfo=tz), hour, minute)
+        else:
+            if remind_at <= now:
+                # 来月
+                next_month = now.month + 1
+                year = now.year
+                if next_month > 12:
+                    next_month = 1
+                    year += 1
+                remind_at = make_dt(datetime(year, next_month, day, tzinfo=tz), hour, minute)
+        return {"repeat_type": "monthly", "repeat_value": str(day), "remind_at": remind_at}
+
+    # 隔週X曜
+    m = re.search(r'隔週\s*([月火水木金土日])\s*曜?日?', text)
+    if m:
+        wd_name = m.group(1)
+        target_wd = WEEKDAY_MAP[wd_name]
+        hour = extract_hour(time_text, default=9)
+        minute = extract_minute(time_text)
+        target_date = next_weekday_date(target_wd)
+        remind_at = make_dt(target_date, hour, minute)
+        return {"repeat_type": "biweekly", "repeat_value": wd_name, "remind_at": remind_at}
+
+    # 毎週X曜
+    m = re.search(r'毎週\s*([月火水木金土日])\s*曜?日?', text)
+    if m:
+        wd_name = m.group(1)
+        target_wd = WEEKDAY_MAP[wd_name]
+        hour = extract_hour(time_text, default=9)
+        minute = extract_minute(time_text)
+        target_date = next_weekday_date(target_wd)
+        remind_at = make_dt(target_date, hour, minute)
+        return {"repeat_type": "weekly", "repeat_value": wd_name, "remind_at": remind_at}
+
+    # 毎週（曜日なし）→ 今日の曜日
+    if re.search(r'毎週', text):
+        wd_name = WEEKDAY_NAMES[now.weekday()]
+        hour = extract_hour(time_text, default=9)
+        minute = extract_minute(time_text)
+        target_date = next_weekday_date(now.weekday())
+        remind_at = make_dt(target_date, hour, minute)
+        return {"repeat_type": "weekly", "repeat_value": wd_name, "remind_at": remind_at}
+
+    # 毎朝 → daily, デフォルト8:00
+    if '毎朝' in text:
+        hour = extract_hour(time_text.replace('毎朝', ''), default=8)
+        minute = extract_minute(time_text)
+        remind_at = make_dt(now, hour, minute)
+        if remind_at <= now:
+            remind_at += timedelta(days=1)
+        return {"repeat_type": "daily", "repeat_value": None, "remind_at": remind_at}
+
+    # 毎晩 → daily, デフォルト20:00
+    if '毎晩' in text:
+        hour = extract_hour(time_text.replace('毎晩', ''), default=20)
+        minute = extract_minute(time_text)
+        remind_at = make_dt(now, hour, minute)
+        if remind_at <= now:
+            remind_at += timedelta(days=1)
+        return {"repeat_type": "daily", "repeat_value": None, "remind_at": remind_at}
+
+    # 毎夕(方)? → daily, デフォルト17:00
+    if re.search(r'毎夕(方)?', text):
+        hour = extract_hour(time_text.replace('毎夕方', '').replace('毎夕', ''), default=17)
+        minute = extract_minute(time_text)
+        remind_at = make_dt(now, hour, minute)
+        if remind_at <= now:
+            remind_at += timedelta(days=1)
+        return {"repeat_type": "daily", "repeat_value": None, "remind_at": remind_at}
+
+    # 毎日
+    if '毎日' in text:
+        hour = extract_hour(time_text, default=9)
+        minute = extract_minute(time_text)
+        remind_at = make_dt(now, hour, minute)
+        if remind_at <= now:
+            remind_at += timedelta(days=1)
+        return {"repeat_type": "daily", "repeat_value": None, "remind_at": remind_at}
+
+    # 平日
+    if '平日' in text:
+        hour = extract_hour(time_text, default=9)
+        minute = extract_minute(time_text)
+        remind_at = make_dt(now, hour, minute)
+        if remind_at <= now or now.weekday() >= 5:
+            # 次の平日を探す
+            remind_at += timedelta(days=1)
+            while remind_at.weekday() >= 5:
+                remind_at += timedelta(days=1)
+        return {"repeat_type": "weekdays", "repeat_value": None, "remind_at": remind_at}
+
+    return None
+
+
 def parse_datetime_pattern(user_input: str, now: datetime, tz: ZoneInfo) -> datetime | None:
     """正規表現パターンで日時を解析"""
     text = normalize_numbers(user_input)
-    weekdays = {'月': 0, '火': 1, '水': 2, '木': 3, '金': 4, '土': 5, '日': 6}
-
-    def extract_hour(t: str, default: int = 9) -> int:
-        """テキストから時刻を抽出"""
-        # 午後X時
-        m = re.search(r'午後\s*(\d+)\s*時', t)
-        if m:
-            h = int(m.group(1))
-            return h + 12 if h < 12 else h
-        # 午前X時
-        m = re.search(r'午前\s*(\d+)\s*時', t)
-        if m:
-            return int(m.group(1))
-        # X時半 / X時Y分 / X時
-        m = re.search(r'(\d+)\s*時', t)
-        if m:
-            h = int(m.group(1))
-            # 昼/夕方/夜のコンテキストがあれば1〜11時をPMに補正
-            is_pm_context = any(w in t for w in ['昼', '夕方', '夜', '深夜'])
-            is_am_context = '朝' in t
-            if is_pm_context and not is_am_context and 1 <= h <= 11:
-                h += 12
-            return h
-        # 朝昼夕夜（時刻指定なし）— 長いキーワードを先にチェック
-        if '朝' in t:
-            return 8
-        if '正午' in t or 'お昼' in t:
-            return 12
-        if '昼' in t:
-            return 12
-        if '夕方' in t:
-            return 17
-        if '深夜' in t:
-            return 23
-        if '夜' in t:
-            return 20
-        return default
-
-    def extract_minute(t: str) -> int:
-        """テキストから分を抽出"""
-        # X時半
-        if re.search(r'\d+\s*時\s*半', t):
-            return 30
-        # X時Y分
-        m = re.search(r'\d+\s*時\s*(\d+)\s*分', t)
-        if m:
-            return int(m.group(1))
-        return 0
+    weekdays = WEEKDAY_MAP
 
     def make_time(base_date: datetime, t: str, default_hour: int = 9) -> datetime:
         """日付と時刻を組み合わせる"""
@@ -126,6 +328,20 @@ def parse_datetime_pattern(user_input: str, now: datetime, tz: ZoneInfo) -> date
     m = re.search(r'あと\s*(\d+)\s*時間', text)
     if m:
         return now + timedelta(hours=int(m.group(1)))
+
+    # X日後 / あとX日
+    m = re.search(r'(\d+)\s*日\s*後', text) or re.search(r'あと\s*(\d+)\s*日', text)
+    if m:
+        days = int(m.group(1))
+        target = now + timedelta(days=days)
+        return make_time(target, text)
+
+    # X週間後
+    m = re.search(r'(\d+)\s*週間?\s*後', text)
+    if m:
+        weeks = int(m.group(1))
+        target = now + timedelta(weeks=weeks)
+        return make_time(target, text)
 
     # === 特定日付 ===
 
@@ -172,6 +388,56 @@ def parse_datetime_pattern(user_input: str, now: datetime, tz: ZoneInfo) -> date
             saturday = now
         return make_time(saturday, text)
 
+    # === 再来月 ===
+
+    # 再来月末
+    if '再来月末' in text:
+        month = now.month + 2
+        year = now.year
+        while month > 12:
+            month -= 12
+            year += 1
+        if month == 12:
+            last_day = datetime(year + 1, 1, 1, tzinfo=tz) - timedelta(days=1)
+        else:
+            last_day = datetime(year, month + 1, 1, tzinfo=tz) - timedelta(days=1)
+        return make_time(last_day, text)
+
+    # 再来月初
+    if '再来月初' in text:
+        month = now.month + 2
+        year = now.year
+        while month > 12:
+            month -= 12
+            year += 1
+        first_day = datetime(year, month, 1, tzinfo=tz)
+        return make_time(first_day, text)
+
+    # 再来月X日
+    m = re.search(r'再来月\s*(\d+)\s*日', text)
+    if m:
+        day = int(m.group(1))
+        month = now.month + 2
+        year = now.year
+        while month > 12:
+            month -= 12
+            year += 1
+        try:
+            target = datetime(year, month, day, tzinfo=tz)
+        except ValueError:
+            return None
+        return make_time(target, text)
+
+    # 再来月（日付なし）
+    if '再来月' in text:
+        month = now.month + 2
+        year = now.year
+        while month > 12:
+            month -= 12
+            year += 1
+        first_day = datetime(year, month, 1, tzinfo=tz)
+        return make_time(first_day, text)
+
     # === 月末・月初 ===
 
     # 来月末
@@ -212,6 +478,33 @@ def parse_datetime_pattern(user_input: str, now: datetime, tz: ZoneInfo) -> date
     if '月初' in text:
         first_day = now.replace(day=1)
         return make_time(first_day, text)
+
+    # === 今月X日 / 来月X日 ===
+
+    # 来月X日
+    m = re.search(r'来月\s*(\d+)\s*日', text)
+    if m:
+        day = int(m.group(1))
+        month = now.month + 1
+        year = now.year
+        if month > 12:
+            month = 1
+            year += 1
+        try:
+            target = datetime(year, month, day, tzinfo=tz)
+        except ValueError:
+            return None
+        return make_time(target, text)
+
+    # 今月X日
+    m = re.search(r'今月\s*(\d+)\s*日', text)
+    if m:
+        day = int(m.group(1))
+        try:
+            target = now.replace(day=day)
+        except ValueError:
+            return None
+        return make_time(target, text)
 
     # === 曜日 ===
 
@@ -343,14 +636,26 @@ def parse_datetime_pattern(user_input: str, now: datetime, tz: ZoneInfo) -> date
 
 def extract_content(user_input: str) -> str:
     """ユーザー入力から日時表現を除去してcontentを抽出"""
-    # 末尾の助詞パターン（までに、に、から、まで、で、の）
-    _p = r'(までに|に|から|まで|で|の)?'
+    # 「から揚げ」「から拭き」「からし」「からあげ」を保護する「から」
+    _kara = r'から(?!揚|拭|し|あげ)'
+    # 末尾の助詞パターン（「のから」等の二重助詞にも対応、複合語を保護）
+    _p = rf'(の{_kara}|のまでに|のまで|までに|に|{_kara}|まで|で|の)?'
+    # 日付のみ（時刻なし）用の助詞パターン（「にんじん」「でかける」等も保護）
+    _p_date = rf'({_kara}|までに|まで|に(?!ん|こ|が)|で(?!ん|か|き))?'
     # 時刻コンテキスト語（長い語を先に）
     _t = r'(朝イチ|朝|夕方|深夜|夜|昼|正午|お昼)'
 
-    # 日付のみ（時刻なし）のパターンは助詞を食わない
-    # 日付+時刻があるパターンのみ末尾助詞を除去
     patterns = [
+        # 繰り返し表現
+        rf'毎月\s*第\s*[\d,、]+\s*[月火水木金土日]\s*曜?日?\s*の?\s*前日\s*の?\s*({_t}\s*)?\d*\s*時?\s*半?\s*\d*\s*分?\s*{_p}',
+        rf'毎月\s*第\s*[\d,、]+\s*[月火水木金土日]\s*曜?日?\s*の?\s*({_t}\s*)?\d*\s*時?\s*半?\s*\d*\s*分?\s*{_p}',
+        rf'毎月\s*\d+\s*日\s*の?\s*({_t}\s*)?\d*\s*時?\s*半?\s*\d*\s*分?\s*{_p}',
+        rf'(隔週|毎週)\s*[月火水木金土日]?\s*曜?日?\s*の?\s*({_t}\s*)?\d*\s*時?\s*半?\s*\d*\s*分?\s*{_p}',
+        rf'毎(朝|晩|夕方?|日)\s*の?\s*({_t}\s*)?\d*\s*時?\s*半?\s*\d*\s*分?\s*{_p}',
+        rf'平日\s*の?\s*({_t}\s*)?\d*\s*時?\s*半?\s*\d*\s*分?\s*{_p}',
+        rf'\d+\s*日\s*後\s*{_p}',
+        rf'\d+\s*週間?\s*後\s*{_p}',
+        rf'あと\s*\d+\s*日\s*{_p}',
         rf'\d+\s*時間\s*半?\s*後\s*{_p}',
         rf'\d+\s*分\s*後\s*{_p}',
         rf'あと\s*\d+\s*(分|時間)\s*{_p}',
@@ -360,18 +665,21 @@ def extract_content(user_input: str) -> str:
         # 明日/今日 + 朝昼夕夜のみ → 助詞除去
         rf'明々?後?日\s*の?\s*{_t}\s*{_p}',
         rf'今日\s*の?\s*{_t}\s*{_p}',
-        # 明日/今日のみ（時刻なし）→ 「の」は後に時刻語が続く場合のみ除去
-        r'明々?後?日(\s*の(?=\s*(\d|朝|昼|夕|夜|午)))?\s*',
-        r'今日(\s*の(?=\s*(\d|朝|昼|夕|夜|午)))?\s*',
+        # 明日/今日のみ（時刻なし）→ 助詞除去（複合語保護付き）
+        rf'明々?後?日(\s*の(?=\s*(\d|朝|昼|夕|夜|午|から|まで)))?\s*{_p_date}',
+        rf'今日(\s*の(?=\s*(\d|朝|昼|夕|夜|午|から|まで)))?\s*{_p_date}',
         rf'(今|来|再来)週\s*(末|の?\s*[月火水木金土日]\s*曜?日?)?\s*(の?\s*{_t})?\s*\d*\s*時?\s*半?\s*{_p}',
         rf'(次|今度)\s*の?\s*[月火水木金土日]\s*曜?日?\s*(の?\s*{_t})?\s*\d*\s*時?\s*半?\s*{_p}',
+        # 再来月X日 / 来月X日 / 今月X日
+        rf'再来月\s*(末|初|\d+\s*日)?\s*の?\s*({_t}\s*)?\d*\s*時?\s*半?\s*\d*\s*分?\s*{_p}',
+        rf'(今|来)月\s*\d+\s*日\s*の?\s*({_t}\s*)?\d*\s*時?\s*半?\s*\d*\s*分?\s*{_p}',
         # X月X日を先に処理（「(今|来)?月」が「2月」の月を食わないように）
         rf'\d+\s*月\s*\d+\s*日\s*(の?\s*{_t})?\s*\d*\s*時?\s*半?\s*\d*\s*分?\s*{_p}',
         rf'(今|来)?月\s*(末|初)?\s*の?\s*{_t}?\s*\d*\s*時?\s*{_p}',
         rf'午前\s*\d+\s*時\s*半?\s*\d*\s*分?\s*{_p}',
         rf'午後\s*\d+\s*時\s*半?\s*\d*\s*分?\s*{_p}',
         rf'\d+\s*時\s*半?\s*\d*\s*分?\s*{_p}',
-        rf'{_t}\s*{_p}',
+        rf'{_t}(?=\s|に|で|の|から|まで|\d|$)\s*{_p}',
         rf'週末\s*{_p}',
     ]
 
@@ -431,13 +739,29 @@ async def parse_reminder_input(user_input: str) -> dict | None:
     tz = ZoneInfo(TIMEZONE)
     now = datetime.now(tz)
 
+    # 先に繰り返しパターンをチェック
+    repeat_result = parse_repeat_pattern(user_input, now, tz)
+    if repeat_result:
+        content = extract_content(user_input)
+        return {
+            "content": content,
+            "datetime": repeat_result["remind_at"],
+            "repeat_type": repeat_result["repeat_type"],
+            "repeat_value": repeat_result.get("repeat_value"),
+        }
+
     # まずパターンマッチで解析
     remind_at = parse_datetime_pattern(user_input, now, tz)
 
     # パターンで解析できなければLLMにフォールバック
     if remind_at is None:
         logger.info(f"パターンマッチ失敗、LLMで解析: {user_input}")
+        llm_fallback_logger.info(f"入力: {user_input}")
         remind_at = await parse_datetime_llm(user_input, now, tz)
+        if remind_at:
+            llm_fallback_logger.info(f"LLM解析成功: {user_input} -> {remind_at.isoformat()}")
+        else:
+            llm_fallback_logger.warning(f"LLM解析失敗: {user_input}")
 
     if remind_at is None:
         return None

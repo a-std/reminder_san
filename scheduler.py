@@ -1,6 +1,7 @@
 """APSchedulerでリマインド通知を管理するモジュール"""
 
 import logging
+import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -138,13 +139,51 @@ class ReminderScheduler:
             return current + timedelta(weeks=1)
 
         elif repeat_type == "monthly":
-            # 翌月の同日
             next_month = current.month + 1
             next_year = current.year
             if next_month > 12:
                 next_month = 1
                 next_year += 1
 
+            # 第N(,N) X曜日 / 第N(,N) X曜日の前日（複数対応）
+            nth_match = re.match(r'第([\d,]+)([月火水木金土日])(の前日)?', repeat_value or "")
+            if nth_match:
+                weekday_map = {'月': 0, '火': 1, '水': 2, '木': 3, '金': 4, '土': 5, '日': 6}
+                nths = [int(n) for n in nth_match.group(1).split(',') if n.strip()]
+                wd = weekday_map[nth_match.group(2)]
+                is_prev_day = nth_match.group(3) is not None
+                offset = -1 if is_prev_day else 0
+
+                # current以降で最も近い候補を探す（今月残り → 来月 → 再来月）
+                candidates = []
+                search_months = [
+                    (current.year, current.month),
+                    (next_year, next_month),
+                ]
+                # 再来月も念のため
+                rny, rnm = next_year, next_month + 1
+                if rnm > 12:
+                    rnm = 1
+                    rny += 1
+                search_months.append((rny, rnm))
+
+                for sy, sm in search_months:
+                    for n in nths:
+                        target = self._nth_weekday_of_month(sy, sm, n, wd)
+                        if target is not None:
+                            result = target + timedelta(days=offset)
+                            result = result.replace(
+                                hour=current.hour, minute=current.minute,
+                                second=current.second, microsecond=current.microsecond,
+                            )
+                            if result > current:
+                                candidates.append(result)
+
+                if candidates:
+                    return min(candidates)
+                return None
+
+            # 翌月の同日
             # 日付オーバーフロー対応（31日→翌月に存在しない場合）
             try:
                 return current.replace(year=next_year, month=next_month)
@@ -171,6 +210,18 @@ class ReminderScheduler:
             return next_day
 
         return None
+
+    def _nth_weekday_of_month(self, year: int, month: int, nth: int, weekday: int) -> datetime | None:
+        """指定月の第N X曜日を計算。存在しなければNone"""
+        first = datetime(year, month, 1, tzinfo=self.tz)
+        days_ahead = weekday - first.weekday()
+        if days_ahead < 0:
+            days_ahead += 7
+        first_target = first + timedelta(days=days_ahead)
+        result = first_target + timedelta(weeks=nth - 1)
+        if result.month != month:
+            return None
+        return result
 
     def _format_repeat(self, repeat_type: str, repeat_value: str | None) -> str:
         """繰り返し設定を表示用にフォーマット"""

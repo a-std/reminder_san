@@ -32,6 +32,18 @@ logging.basicConfig(
 logging.getLogger("discord").setLevel(logging.WARNING)
 logging.getLogger("discord.http").setLevel(logging.WARNING)
 
+# LLMフォールバック専用ログ（パターンマッチ失敗 → LLM解析した入力を記録）
+llm_fallback_logger = logging.getLogger("llm_fallback")
+llm_fallback_handler = RotatingFileHandler(
+    LOGS_DIR / "llm_fallback.log",
+    maxBytes=5 * 1024 * 1024,  # 5MB
+    backupCount=3,
+    encoding="utf-8",
+)
+llm_fallback_handler.setFormatter(logging.Formatter(log_format))
+llm_fallback_logger.addHandler(llm_fallback_handler)
+llm_fallback_logger.setLevel(logging.INFO)
+
 logger = logging.getLogger(__name__)
 
 

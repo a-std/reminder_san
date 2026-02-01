@@ -306,7 +306,8 @@ class ConfirmReminderView(discord.ui.View):
         )
 
         if self.repeat_type and self.repeat_type != "none":
-            repeat_text = self.repeat_type
+            repeat_label = REPEAT_TYPE_MAP.get(self.repeat_type, self.repeat_type)
+            repeat_text = f"🔁 {repeat_label}"
             if self.repeat_value:
                 repeat_text += f" ({self.repeat_value})"
             embed.add_field(name="繰り返し", value=repeat_text, inline=True)
