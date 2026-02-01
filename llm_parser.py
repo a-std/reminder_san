@@ -687,8 +687,12 @@ def extract_content(user_input: str) -> str:
     for pattern in patterns:
         content = re.sub(pattern, '', content)
 
-    # 除去後に残った先頭の孤立助詞を除去（直後にスペースがある場合のみ）
+    # 除去後に残った先頭の孤立助詞を除去（複合語保護付き）
     content = re.sub(r'^[のにでへ]\s+', '', content)
+    content = re.sub(r'^に(?!ん|こ|が|ち|く|し|せ|ほ|っ|ぎ|じ)', '', content)
+    content = re.sub(r'^で(?!ん|か|き|す|し|も|は)', '', content)
+    content = re.sub(r'^の(?!り|ん|び|こ|ど|む|ぼ)', '', content)
+    content = re.sub(r'^へ(?!ん|や|た|え)', '', content)
     content = re.sub(r'\s+', ' ', content).strip()
     return content if content else user_input
 
