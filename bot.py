@@ -211,6 +211,8 @@ class ReminderBot(commands.Bot):
                 line = f"**{r['content'][:50]}**\n🕐 {time_str}"
                 if r.get("repeat_type") and r["repeat_type"] != "none":
                     repeat_label = REPEAT_TYPE_MAP.get(r["repeat_type"], r["repeat_type"])
+                    if r.get("repeat_value"):
+                        repeat_label += f" {r['repeat_value']}"
                     line += f"  🔁 {repeat_label}"
                 line += f"  👤 <@{r['user_id']}>"
                 lines.append(line)
@@ -307,10 +309,9 @@ class ConfirmReminderView(discord.ui.View):
 
         if self.repeat_type and self.repeat_type != "none":
             repeat_label = REPEAT_TYPE_MAP.get(self.repeat_type, self.repeat_type)
-            repeat_text = f"🔁 {repeat_label}"
             if self.repeat_value:
-                repeat_text += f" ({self.repeat_value})"
-            embed.add_field(name="繰り返し", value=repeat_text, inline=True)
+                repeat_label += f" {self.repeat_value}"
+            embed.add_field(name="繰り返し", value=f"🔁 {repeat_label}", inline=True)
 
         return embed
 
@@ -563,6 +564,8 @@ class ReminderActionView(discord.ui.View):
 
         if self.reminder.get("repeat_type") and self.reminder["repeat_type"] != "none":
             repeat_label = REPEAT_TYPE_MAP.get(self.reminder["repeat_type"], self.reminder["repeat_type"])
+            if self.reminder.get("repeat_value"):
+                repeat_label += f" {self.reminder['repeat_value']}"
             embed.add_field(name="繰り返し", value=f"🔁 {repeat_label}", inline=True)
 
         return embed
