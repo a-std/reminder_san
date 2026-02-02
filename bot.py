@@ -14,6 +14,7 @@ from config import (
     TIMEZONE,
 )
 from database import (
+    close_db,
     create_reminder,
     delete_reminder,
     get_all_active_reminders,
@@ -27,32 +28,9 @@ from database import (
 )
 from llm_parser import parse_reminder_input
 from scheduler import ReminderScheduler
+from utils import WEEKDAY_JA, format_repeat_label, parse_datetime_input
 
 logger = logging.getLogger(__name__)
-
-WEEKDAY_JA = ["月", "火", "水", "木", "金", "土", "日"]
-
-REPEAT_TYPE_MAP = {
-    "daily": "毎日",
-    "weekly": "毎週",
-    "monthly": "毎月",
-    "biweekly": "隔週",
-    "weekdays": "平日",
-}
-
-
-def format_repeat_label(repeat_type: str, repeat_value: str | None = None) -> str:
-    """繰り返し設定を表示用ラベルにフォーマット"""
-    base = REPEAT_TYPE_MAP.get(repeat_type, repeat_type)
-    if not repeat_value:
-        return base
-    # monthly: "毎月" + repeat_value を自然に結合
-    if repeat_type == "monthly":
-        if repeat_value.isdigit():
-            return f"毎月{repeat_value}日"
-        return f"毎月{repeat_value}"
-    # weekly/biweekly: "毎週水曜" / "隔週水曜"
-    return f"{base}{repeat_value}"
 
 
 class ReminderBot(commands.Bot):
@@ -78,6 +56,12 @@ class ReminderBot(commands.Bot):
 
         # 永続Viewを登録（Bot再起動後もボタンが機能するように）
         self.add_view(PersistentListView())
+
+        # アクティブなリマインダーのスヌーズViewを復元
+        from scheduler import SnoozeView
+        active_reminders = await get_all_active_reminders()
+        for r in active_reminders:
+            self.add_view(SnoozeView(r["id"], bot=self))
 
         self.scheduler = ReminderScheduler(self)
         await self.scheduler.start()
@@ -180,7 +164,7 @@ class ReminderBot(commands.Bot):
 
             value = f"🕐 {time_str}"
             if r.get("repeat_type") and r["repeat_type"] != "none":
-                value += f" (🔁 {r['repeat_type']})"
+                value += f" (🔁 {format_repeat_label(r['repeat_type'], r.get('repeat_value'))})"
 
             embed.add_field(
                 name=r["content"][:30],
@@ -191,7 +175,7 @@ class ReminderBot(commands.Bot):
         if len(reminders) > 10:
             embed.set_footer(text=f"他 {len(reminders) - 10} 件")
 
-        view = ReminderListView(reminders[:25], str(message.author.id))
+        view = ReminderListView(reminders[:25], str(message.author.id), bot_instance=self)
         await message.reply(embed=embed, view=view)
 
     async def update_persistent_list(self):
@@ -271,6 +255,7 @@ class ReminderBot(commands.Bot):
         """Bot終了時"""
         if self.scheduler:
             await self.scheduler.stop()
+        await close_db()
         await super().close()
 
 
@@ -378,6 +363,17 @@ class ConfirmReminderView(discord.ui.View):
         await interaction.message.delete()
 
 
+async def _resolve_datetime(date_str: str, time_str: str) -> datetime | None:
+    """日付・時刻文字列からdatetimeを解決する共通処理。
+    まず直接パースを試み、失敗したらLLMフォールバック。"""
+    result = parse_datetime_input(date_str, time_str)
+    if result:
+        return result
+    # LLMフォールバック
+    llm_result = await parse_reminder_input(f"{date_str} {time_str}に予定")
+    return llm_result["datetime"] if llm_result else None
+
+
 class DateTimeModal(discord.ui.Modal, title="日時変更"):
     """日時変更用モーダル"""
 
@@ -397,50 +393,18 @@ class DateTimeModal(discord.ui.Modal, title="日時変更"):
     def __init__(self, parent_view: ConfirmReminderView):
         super().__init__()
         self.parent_view = parent_view
-        # 現在の値をデフォルトに設定
         self.date_input.default = parent_view.remind_at.strftime("%Y/%m/%d")
         self.time_input.default = parent_view.remind_at.strftime("%H:%M")
 
     async def on_submit(self, interaction: discord.Interaction):
-        from llm_parser import parse_reminder_input
+        new_datetime = await _resolve_datetime(self.date_input.value, self.time_input.value)
+        if not new_datetime:
+            await interaction.response.send_message(
+                "日時を解析できませんでした。「2026/01/29 18:00」形式で入力してください。",
+                ephemeral=True,
+            )
+            return
 
-        # 入力を解析
-        date_str = self.date_input.value
-        time_str = self.time_input.value
-
-        # まず直接パースを試みる
-        tz = ZoneInfo(TIMEZONE)
-        try:
-            # 標準形式でパース
-            if "/" in date_str:
-                parts = date_str.split("/")
-                if len(parts) == 3:
-                    year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
-                elif len(parts) == 2:
-                    year = datetime.now(tz).year
-                    month, day = int(parts[0]), int(parts[1])
-                else:
-                    raise ValueError("Invalid date format")
-            else:
-                raise ValueError("Use LLM")
-
-            time_parts = time_str.split(":")
-            hour, minute = int(time_parts[0]), int(time_parts[1]) if len(time_parts) > 1 else 0
-
-            new_datetime = datetime(year, month, day, hour, minute, tzinfo=tz)
-        except (ValueError, IndexError):
-            # LLMで解析
-            result = await parse_reminder_input(f"{date_str} {time_str}に予定")
-            if result:
-                new_datetime = result["datetime"]
-            else:
-                await interaction.response.send_message(
-                    "日時を解析できませんでした。「2026/01/29 18:00」形式で入力してください。",
-                    ephemeral=True,
-                )
-                return
-
-        # 親Viewを更新
         self.parent_view.remind_at = new_datetime
         embed = self.parent_view.create_confirm_embed()
         await interaction.response.edit_message(embed=embed, view=self.parent_view)
@@ -449,9 +413,10 @@ class DateTimeModal(discord.ui.Modal, title="日時変更"):
 class ReminderListView(discord.ui.View):
     """リマインダー一覧用View"""
 
-    def __init__(self, reminders: list[dict], user_id: str):
+    def __init__(self, reminders: list[dict], user_id: str, bot_instance: "ReminderBot" = None):
         super().__init__(timeout=300)
         self.user_id = user_id
+        self.bot_instance = bot_instance
 
         if reminders:
             options = [
@@ -486,8 +451,8 @@ class ReminderListView(discord.ui.View):
 
         if deleted:
             await interaction.followup.send("削除しました。")
-            # 常設リストも更新
-            await bot.update_persistent_list()
+            if self.bot_instance:
+                await self.bot_instance.update_persistent_list()
         else:
             await interaction.followup.send("削除に失敗しました。", ephemeral=True)
 
@@ -537,11 +502,11 @@ class PersistentListView(discord.ui.View):
                 "このリマインダーは既に無効です。リストが更新されるまでお待ちください。",
                 ephemeral=True,
             )
-            await bot.update_persistent_list()
+            await interaction.client.update_persistent_list()
             return
 
         # アクションパネルをephemeralで表示
-        view = ReminderActionView(reminder_id, reminder, bot)
+        view = ReminderActionView(reminder_id, reminder, interaction.client)
         embed = view.create_embed()
         await interaction.response.send_message(
             embed=embed, view=view, ephemeral=True,
@@ -602,7 +567,7 @@ class ReminderActionView(discord.ui.View):
             await interaction.response.send_message("他のユーザーのリマインダーは操作できません。", ephemeral=True)
             return
 
-        modal = EditContentModal(self.reminder_id, self.reminder["content"])
+        modal = EditContentModal(self.reminder_id, self.reminder["content"], self.bot_instance)
         await interaction.response.send_modal(modal)
 
     @discord.ui.button(label="時刻変更", style=discord.ButtonStyle.primary)
@@ -612,7 +577,7 @@ class ReminderActionView(discord.ui.View):
             await interaction.response.send_message("他のユーザーのリマインダーは操作できません。", ephemeral=True)
             return
 
-        modal = EditTimeModal(self.reminder_id, self.reminder["remind_at"])
+        modal = EditTimeModal(self.reminder_id, self.reminder["remind_at"], self.bot_instance)
         await interaction.response.send_modal(modal)
 
 
@@ -626,9 +591,10 @@ class EditContentModal(discord.ui.Modal, title="タイトル変更"):
         max_length=200,
     )
 
-    def __init__(self, reminder_id: int, current_content: str):
+    def __init__(self, reminder_id: int, current_content: str, bot_instance: "ReminderBot" = None):
         super().__init__()
         self.reminder_id = reminder_id
+        self.bot_instance = bot_instance
         self.content_input.default = current_content
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -646,7 +612,8 @@ class EditContentModal(discord.ui.Modal, title="タイトル変更"):
                 f"内容を **{new_content}** に変更しました。",
                 ephemeral=True,
             )
-            await bot.update_persistent_list()
+            bot_inst = self.bot_instance or interaction.client
+            await bot_inst.update_persistent_list()
         else:
             await interaction.response.send_message("変更に失敗しました。", ephemeral=True)
 
@@ -667,45 +634,22 @@ class EditTimeModal(discord.ui.Modal, title="時刻変更"):
         max_length=10,
     )
 
-    def __init__(self, reminder_id: int, current_remind_at: str):
+    def __init__(self, reminder_id: int, current_remind_at: str, bot_instance: "ReminderBot" = None):
         super().__init__()
         self.reminder_id = reminder_id
+        self.bot_instance = bot_instance
         remind_at = datetime.fromisoformat(current_remind_at)
         self.date_input.default = remind_at.strftime("%Y/%m/%d")
         self.time_input.default = remind_at.strftime("%H:%M")
 
     async def on_submit(self, interaction: discord.Interaction):
-        date_str = self.date_input.value
-        time_str = self.time_input.value
-
-        tz = ZoneInfo(TIMEZONE)
-        try:
-            if "/" in date_str:
-                parts = date_str.split("/")
-                if len(parts) == 3:
-                    year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
-                elif len(parts) == 2:
-                    year = datetime.now(tz).year
-                    month, day = int(parts[0]), int(parts[1])
-                else:
-                    raise ValueError("Invalid date format")
-            else:
-                raise ValueError("Use LLM")
-
-            time_parts = time_str.split(":")
-            hour, minute = int(time_parts[0]), int(time_parts[1]) if len(time_parts) > 1 else 0
-
-            new_datetime = datetime(year, month, day, hour, minute, tzinfo=tz)
-        except (ValueError, IndexError):
-            result = await parse_reminder_input(f"{date_str} {time_str}に予定")
-            if result:
-                new_datetime = result["datetime"]
-            else:
-                await interaction.response.send_message(
-                    "日時を解析できませんでした。「2026/01/29 18:00」形式で入力してください。",
-                    ephemeral=True,
-                )
-                return
+        new_datetime = await _resolve_datetime(self.date_input.value, self.time_input.value)
+        if not new_datetime:
+            await interaction.response.send_message(
+                "日時を解析できませんでした。「2026/01/29 18:00」形式で入力してください。",
+                ephemeral=True,
+            )
+            return
 
         success = await update_reminder_time_by_user(
             self.reminder_id, str(interaction.user.id), new_datetime,
@@ -717,7 +661,8 @@ class EditTimeModal(discord.ui.Modal, title="時刻変更"):
                 f"時刻を **{new_datetime.strftime('%Y/%m/%d')} ({weekday}) {new_datetime.strftime('%H:%M')}** に変更しました。",
                 ephemeral=True,
             )
-            await bot.update_persistent_list()
+            bot_inst = self.bot_instance or interaction.client
+            await bot_inst.update_persistent_list()
         else:
             await interaction.response.send_message("変更に失敗しました。", ephemeral=True)
 

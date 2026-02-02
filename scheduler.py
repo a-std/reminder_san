@@ -15,6 +15,7 @@ from database import (
     get_due_reminders,
     update_reminder_time,
 )
+from utils import format_repeat_label
 
 logger = logging.getLogger(__name__)
 
@@ -188,16 +189,19 @@ class ReminderScheduler:
             try:
                 return current.replace(year=next_year, month=next_month)
             except ValueError:
-                # 翌月末に調整
+                # 翌月末に調整（翌々月1日の前日を求める）
                 if next_month == 12:
                     next_next_month = 1
                     next_next_year = next_year + 1
                 else:
                     next_next_month = next_month + 1
                     next_next_year = next_year
-                return current.replace(
-                    year=next_next_year, month=next_next_month, day=1
-                ) - timedelta(days=1)
+                last_day = (datetime(next_next_year, next_next_month, 1, tzinfo=self.tz)
+                            - timedelta(days=1))
+                return last_day.replace(
+                    hour=current.hour, minute=current.minute,
+                    second=current.second, microsecond=current.microsecond,
+                )
 
         elif repeat_type == "biweekly":
             return current + timedelta(weeks=2)
@@ -225,30 +229,23 @@ class ReminderScheduler:
 
     def _format_repeat(self, repeat_type: str, repeat_value: str | None) -> str:
         """繰り返し設定を表示用にフォーマット"""
-        type_map = {
-            "daily": "毎日",
-            "weekly": "毎週",
-            "monthly": "毎月",
-            "biweekly": "隔週",
-            "weekdays": "平日",
-        }
-        base = type_map.get(repeat_type, repeat_type)
-        if not repeat_value:
-            return base
-        if repeat_type == "monthly":
-            if repeat_value.isdigit():
-                return f"毎月{repeat_value}日"
-            return f"毎月{repeat_value}"
-        return f"{base}{repeat_value}"
+        return format_repeat_label(repeat_type, repeat_value)
 
 
 class SnoozeView(discord.ui.View):
-    """スヌーズボタンのView"""
+    """スヌーズボタンのView（永続化対応）"""
 
     def __init__(self, reminder_id: int, bot: discord.Client | None = None):
-        super().__init__(timeout=86400)  # 24時間有効
+        super().__init__(timeout=None)
         self.reminder_id = reminder_id
         self.bot = bot
+
+        # 動的にcustom_idを設定（永続化のため）
+        self.snooze_5min.custom_id = f"snooze:5:{reminder_id}"
+        self.snooze_30min.custom_id = f"snooze:30:{reminder_id}"
+        self.snooze_1hour.custom_id = f"snooze:60:{reminder_id}"
+        self.snooze_tomorrow.custom_id = f"snooze:1440:{reminder_id}"
+        self.mark_done.custom_id = f"snooze:done:{reminder_id}"
 
     @discord.ui.button(label="5分後", style=discord.ButtonStyle.secondary)
     async def snooze_5min(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -264,7 +261,7 @@ class SnoozeView(discord.ui.View):
 
     @discord.ui.button(label="明日", style=discord.ButtonStyle.secondary)
     async def snooze_tomorrow(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._snooze(interaction, 1440)  # 24時間
+        await self._snooze(interaction, 1440)
 
     @discord.ui.button(label="完了", style=discord.ButtonStyle.success)
     async def mark_done(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -275,15 +272,14 @@ class SnoozeView(discord.ui.View):
             "リマインダーを完了にしました。",
             ephemeral=True,
         )
-        # ボタンを無効化
         for item in self.children:
             item.disabled = True
         await interaction.message.edit(view=self)
 
-        # 常設リストを更新
-        if self.bot and hasattr(self.bot, "update_persistent_list"):
+        bot_inst = self.bot or interaction.client
+        if hasattr(bot_inst, "update_persistent_list"):
             try:
-                await self.bot.update_persistent_list()
+                await bot_inst.update_persistent_list()
             except Exception as e:
                 logger.error(f"常設リスト更新エラー: {e}")
 
@@ -299,10 +295,10 @@ class SnoozeView(discord.ui.View):
                 f"リマインダーを {new_time.strftime('%m/%d %H:%M')} に再通知します。",
                 ephemeral=True,
             )
-            # 常設リストを更新
-            if self.bot and hasattr(self.bot, "update_persistent_list"):
+            bot_inst = self.bot or interaction.client
+            if hasattr(bot_inst, "update_persistent_list"):
                 try:
-                    await self.bot.update_persistent_list()
+                    await bot_inst.update_persistent_list()
                 except Exception as e:
                     logger.error(f"常設リスト更新エラー: {e}")
         else:

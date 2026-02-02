@@ -42,3 +42,6 @@ env/
 *.log
 logs/
 *.log.*
+
+# Windows reserved names
+nul

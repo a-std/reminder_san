@@ -13,11 +13,18 @@ from config import GROQ_API_KEY, TIMEZONE
 logger = logging.getLogger(__name__)
 llm_fallback_logger = logging.getLogger("llm_fallback")
 
-# Groqクライアント
-client = OpenAI(
-    api_key=GROQ_API_KEY,
-    base_url="https://api.groq.com/openai/v1",
-)
+# Groqクライアント（遅延初期化）
+_client: OpenAI | None = None
+
+
+def _get_client() -> OpenAI:
+    global _client
+    if _client is None:
+        _client = OpenAI(
+            api_key=GROQ_API_KEY,
+            base_url="https://api.groq.com/openai/v1",
+        )
+    return _client
 
 # LLM用スキーマ
 PARSE_DATETIME_TOOL = {
@@ -40,11 +47,18 @@ PARSE_DATETIME_TOOL = {
 
 
 def normalize_numbers(text: str) -> str:
-    """全角数字を半角に変換"""
+    """全角数字を半角に変換し、HH:MM形式をX時Y分に正規化"""
     zen = '０１２３４５６７８９'
     han = '0123456789'
     for z, h in zip(zen, han):
         text = text.replace(z, h)
+    # HH:MM → X時Y分 に正規化（パターンマッチを統一するため）
+    def _colon_to_ji(m):
+        h, mi = m.group(1), m.group(2)
+        if mi == '00':
+            return f'{int(h)}時'
+        return f'{int(h)}時{int(mi)}分'
+    text = re.sub(r'(\d{1,2}):(\d{2})', _colon_to_ji, text)
     return text
 
 
@@ -374,18 +388,10 @@ def parse_datetime_pattern(user_input: str, now: datetime, tz: ZoneInfo) -> date
 
     # 今週末 / 週末
     if '今週末' in text or '週末' in text:
-        days_until_saturday = (5 - now.weekday()) % 7
-        if days_until_saturday == 0 and now.weekday() == 5:
+        if now.weekday() >= 5:  # 土日なら今日
             saturday = now
-        elif days_until_saturday == 0:
-            days_until_saturday = 7
         else:
-            pass
-        saturday = now + timedelta(days=(5 - now.weekday()) % 7 or 7)
-        if now.weekday() == 5:  # 今日が土曜
-            saturday = now
-        elif now.weekday() == 6:  # 今日が日曜
-            saturday = now
+            saturday = now + timedelta(days=(5 - now.weekday()))
         return make_time(saturday, text)
 
     # === 再来月 ===
@@ -668,8 +674,8 @@ def extract_content(user_input: str) -> str:
         # 明日/今日のみ（時刻なし）→ 助詞除去（複合語保護付き）
         rf'明々?後?日(\s*の(?=\s*(\d|朝|昼|夕|夜|午|から|まで)))?\s*{_p_date}',
         rf'今日(\s*の(?=\s*(\d|朝|昼|夕|夜|午|から|まで)))?\s*{_p_date}',
-        rf'(今|来|再来)週\s*(末|の?\s*[月火水木金土日]\s*曜?日?)?\s*(の?\s*{_t})?\s*\d*\s*時?\s*半?\s*{_p}',
-        rf'(次|今度)\s*の?\s*[月火水木金土日]\s*曜?日?\s*(の?\s*{_t})?\s*\d*\s*時?\s*半?\s*{_p}',
+        rf'(今|来|再来)週\s*(末|の?\s*[月火水木金土日]\s*曜?日?)?\s*(の?\s*{_t})?\s*\d*\s*時?\s*半?\s*\d*\s*分?\s*{_p}',
+        rf'(次|今度)\s*の?\s*[月火水木金土日]\s*曜?日?\s*(の?\s*{_t})?\s*\d*\s*時?\s*半?\s*\d*\s*分?\s*{_p}',
         # 再来月X日 / 来月X日 / 今月X日
         rf'再来月\s*(末|初|\d+\s*日)?\s*の?\s*({_t}\s*)?\d*\s*時?\s*半?\s*\d*\s*分?\s*{_p}',
         rf'(今|来)月\s*\d+\s*日\s*の?\s*({_t}\s*)?\d*\s*時?\s*半?\s*\d*\s*分?\s*{_p}',
@@ -713,7 +719,7 @@ async def parse_datetime_llm(user_input: str, now: datetime, tz: ZoneInfo) -> da
 入力: {user_input}"""
 
     try:
-        response = client.chat.completions.create(
+        response = _get_client().chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": prompt}],
             tools=[PARSE_DATETIME_TOOL],
