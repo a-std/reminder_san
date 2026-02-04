@@ -18,11 +18,9 @@ from database import (
     create_reminder,
     delete_reminder,
     get_all_active_reminders,
-    get_bot_state,
     get_reminder_by_id,
     get_user_reminders,
     init_db,
-    set_bot_state,
     update_reminder_content,
     update_reminder_time_by_user,
 )
@@ -54,14 +52,12 @@ class ReminderBot(commands.Bot):
         """Bot起動時の初期化"""
         await init_db()
 
-        # 永続Viewを登録（Bot再起動後もボタンが機能するように）
-        self.add_view(PersistentListView())
-
         # アクティブなリマインダーのスヌーズViewを復元
         from scheduler import SnoozeView
         active_reminders = await get_all_active_reminders()
         for r in active_reminders:
-            self.add_view(SnoozeView(r["id"], bot=self))
+            is_recurring = bool(r.get("repeat_type") and r["repeat_type"] != "none")
+            self.add_view(SnoozeView(r["id"], bot=self, is_recurring=is_recurring))
 
         self.scheduler = ReminderScheduler(self)
         await self.scheduler.start()
@@ -86,9 +82,6 @@ class ReminderBot(commands.Bot):
                 name="リマインダー",
             )
         )
-
-        # 起動時に常設リストを更新
-        await self.update_persistent_list()
 
     async def on_message(self, message: discord.Message):
         """メッセージ受信時"""
@@ -177,79 +170,6 @@ class ReminderBot(commands.Bot):
 
         view = ReminderListView(reminders[:25], str(message.author.id), bot_instance=self)
         await message.reply(embed=embed, view=view)
-
-    async def update_persistent_list(self):
-        """常設リマインダーリストを更新（既存メッセージをeditで位置固定）"""
-        if not self.reminder_channel_id:
-            return
-
-        channel = self.get_channel(self.reminder_channel_id)
-        if not channel:
-            try:
-                channel = await self.fetch_channel(self.reminder_channel_id)
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
-                logger.warning(f"常設リスト用チャンネル取得失敗: {e}")
-                return
-
-        reminders = await get_all_active_reminders()
-
-        # Embedを構築
-        embed = discord.Embed(
-            title=f"📋 リマインダー一覧（{len(reminders)}件）",
-            color=discord.Color.blue(),
-        )
-
-        if reminders:
-            lines = []
-            for r in reminders[:25]:
-                remind_at = datetime.fromisoformat(r["remind_at"])
-                weekday = WEEKDAY_JA[remind_at.weekday()]
-                time_str = f"{remind_at.strftime('%m/%d')} ({weekday}) {remind_at.strftime('%H:%M')}"
-
-                line = f"**{r['content'][:50]}**\n🕐 {time_str}"
-                if r.get("repeat_type") and r["repeat_type"] != "none":
-                    line += f"  🔁 {format_repeat_label(r['repeat_type'], r.get('repeat_value'))}"
-                lines.append(line)
-
-            embed.description = "\n\n".join(lines)
-
-            if len(reminders) > 25:
-                embed.set_footer(text=f"他 {len(reminders) - 25} 件")
-        else:
-            embed.description = "リマインダーはありません"
-
-        # Viewを構築（リマインダーがある場合のみセレクトメニュー付き）
-        if reminders:
-            view = PersistentListView(reminders[:25])
-        else:
-            view = discord.ui.View()
-
-        logger.info(f"常設リスト更新: {len(reminders)}件, view_children={len(view.children) if view else 0}")
-
-        # 保存済みメッセージIDを取得
-        saved_message_id = await get_bot_state("list_message_id")
-
-        if saved_message_id:
-            try:
-                msg = await channel.fetch_message(int(saved_message_id))
-                # 最新メッセージか判定: 最下部ならedit、埋もれていたら削除→再作成
-                last_message = channel.last_message or await channel.fetch_message(channel.last_message_id)
-                if last_message and last_message.id == msg.id:
-                    await msg.edit(embed=embed, view=view)
-                    logger.info(f"常設リスト編集完了（最下部）: message_id={msg.id}")
-                    return
-                else:
-                    await msg.delete()
-                    logger.info("常設メッセージが埋もれているため削除→再作成")
-            except discord.NotFound:
-                logger.info("常設メッセージが見つからないため新規作成")
-            except discord.HTTPException as e:
-                logger.warning(f"常設メッセージ更新失敗: {e}")
-
-        # 新規作成
-        msg = await channel.send(embed=embed, view=view)
-        await set_bot_state("list_message_id", str(msg.id))
-        logger.info(f"常設リスト作成完了: message_id={msg.id}")
 
     async def close(self):
         """Bot終了時"""
@@ -341,9 +261,6 @@ class ConfirmReminderView(discord.ui.View):
             item.disabled = True
 
         await interaction.response.edit_message(embed=embed, view=self)
-
-        # 常設リストを更新
-        await self.bot_instance.update_persistent_list()
 
     @discord.ui.button(label="日時変更", style=discord.ButtonStyle.primary)
     async def change_time(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -451,66 +368,8 @@ class ReminderListView(discord.ui.View):
 
         if deleted:
             await interaction.followup.send("削除しました。")
-            if self.bot_instance:
-                await self.bot_instance.update_persistent_list()
         else:
             await interaction.followup.send("削除に失敗しました。", ephemeral=True)
-
-
-class PersistentListView(discord.ui.View):
-    """常設リマインダーリスト用View（永続化対応・セレクトメニューのみ）"""
-
-    def __init__(self, reminders: list[dict] | None = None):
-        super().__init__(timeout=None)
-        self.reminders = reminders or []
-
-        # セレクトメニューを動的に構築
-        if self.reminders:
-            options = [
-                discord.SelectOption(
-                    label=r["content"][:50],
-                    description=datetime.fromisoformat(r["remind_at"]).strftime("%m/%d %H:%M"),
-                    value=str(r["id"]),
-                )
-                for r in self.reminders[:25]
-            ]
-        else:
-            options = [
-                discord.SelectOption(label="読み込み中...", value="0"),
-            ]
-
-        select = discord.ui.Select(
-            custom_id="persistent_list:select",
-            placeholder="操作するリマインダーを選択...",
-            options=options,
-        )
-        select.callback = self.select_callback
-        self.add_item(select)
-
-    async def select_callback(self, interaction: discord.Interaction):
-        """セレクトメニュー選択時: ephemeralでアクションパネルを返す"""
-        values = interaction.data.get("values", []) if interaction.data else []
-        if not values or values[0] == "0":
-            await interaction.response.defer()
-            return
-
-        reminder_id = int(values[0])
-        reminder = await get_reminder_by_id(reminder_id)
-
-        if not reminder or not reminder.get("is_active"):
-            await interaction.response.send_message(
-                "このリマインダーは既に無効です。リストが更新されるまでお待ちください。",
-                ephemeral=True,
-            )
-            await interaction.client.update_persistent_list()
-            return
-
-        # アクションパネルをephemeralで表示
-        view = ReminderActionView(reminder_id, reminder, interaction.client)
-        embed = view.create_embed()
-        await interaction.response.send_message(
-            embed=embed, view=view, ephemeral=True,
-        )
 
 
 class ReminderActionView(discord.ui.View):
@@ -556,7 +415,6 @@ class ReminderActionView(discord.ui.View):
             for item in self.children:
                 item.disabled = True
             await interaction.response.edit_message(embed=embed, view=self)
-            await self.bot_instance.update_persistent_list()
         else:
             await interaction.response.send_message("削除に失敗しました。", ephemeral=True)
 
@@ -612,8 +470,6 @@ class EditContentModal(discord.ui.Modal, title="タイトル変更"):
                 f"内容を **{new_content}** に変更しました。",
                 ephemeral=True,
             )
-            bot_inst = self.bot_instance or interaction.client
-            await bot_inst.update_persistent_list()
         else:
             await interaction.response.send_message("変更に失敗しました。", ephemeral=True)
 
@@ -661,8 +517,6 @@ class EditTimeModal(discord.ui.Modal, title="時刻変更"):
                 f"時刻を **{new_datetime.strftime('%Y/%m/%d')} ({weekday}) {new_datetime.strftime('%H:%M')}** に変更しました。",
                 ephemeral=True,
             )
-            bot_inst = self.bot_instance or interaction.client
-            await bot_inst.update_persistent_list()
         else:
             await interaction.response.send_message("変更に失敗しました。", ephemeral=True)
 

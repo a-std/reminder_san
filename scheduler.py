@@ -60,12 +60,6 @@ class ReminderScheduler:
             except Exception as e:
                 logger.error(f"リマインダー送信エラー (ID={reminder['id']}): {e}")
 
-        # 全リマインダー処理後に常設リストを1回だけ更新
-        try:
-            await self.bot.update_persistent_list()
-        except Exception as e:
-            logger.error(f"常設リスト更新エラー: {e}")
-
     async def send_reminder(self, reminder: dict):
         """リマインダーを送信"""
         channel_id = int(reminder["channel_id"])
@@ -95,7 +89,8 @@ class ReminderScheduler:
             embed.add_field(name="繰り返し", value=repeat_text, inline=True)
 
         # スヌーズボタンを作成
-        view = SnoozeView(reminder["id"], bot=self.bot)
+        is_recurring = bool(reminder.get("repeat_type") and reminder["repeat_type"] != "none")
+        view = SnoozeView(reminder["id"], bot=self.bot, is_recurring=is_recurring)
 
         try:
             await channel.send(
@@ -235,7 +230,7 @@ class ReminderScheduler:
 class SnoozeView(discord.ui.View):
     """スヌーズボタンのView（永続化対応）"""
 
-    def __init__(self, reminder_id: int, bot: discord.Client | None = None):
+    def __init__(self, reminder_id: int, bot: discord.Client | None = None, is_recurring: bool = False):
         super().__init__(timeout=None)
         self.reminder_id = reminder_id
         self.bot = bot
@@ -246,6 +241,10 @@ class SnoozeView(discord.ui.View):
         self.snooze_1hour.custom_id = f"snooze:60:{reminder_id}"
         self.snooze_tomorrow.custom_id = f"snooze:1440:{reminder_id}"
         self.mark_done.custom_id = f"snooze:done:{reminder_id}"
+
+        # 単発リマインダーは通知時点で無効化済みなので完了ボタン不要
+        if not is_recurring:
+            self.remove_item(self.mark_done)
 
     @discord.ui.button(label="5分後", style=discord.ButtonStyle.secondary)
     async def snooze_5min(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -276,13 +275,6 @@ class SnoozeView(discord.ui.View):
             item.disabled = True
         await interaction.message.edit(view=self)
 
-        bot_inst = self.bot or interaction.client
-        if hasattr(bot_inst, "update_persistent_list"):
-            try:
-                await bot_inst.update_persistent_list()
-            except Exception as e:
-                logger.error(f"常設リスト更新エラー: {e}")
-
     async def _snooze(self, interaction: discord.Interaction, minutes: int):
         from database import snooze_reminder
 
@@ -295,12 +287,6 @@ class SnoozeView(discord.ui.View):
                 f"リマインダーを {new_time.strftime('%m/%d %H:%M')} に再通知します。",
                 ephemeral=True,
             )
-            bot_inst = self.bot or interaction.client
-            if hasattr(bot_inst, "update_persistent_list"):
-                try:
-                    await bot_inst.update_persistent_list()
-                except Exception as e:
-                    logger.error(f"常設リスト更新エラー: {e}")
         else:
             await interaction.response.send_message(
                 "スヌーズに失敗しました。",
