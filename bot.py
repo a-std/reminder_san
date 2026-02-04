@@ -146,7 +146,7 @@ class ReminderBot(commands.Bot):
             return
 
         embed = discord.Embed(
-            title="📋 リマインダー一覧",
+            title="リマインダー一覧",
             color=discord.Color.blue(),
         )
 
@@ -155,9 +155,9 @@ class ReminderBot(commands.Bot):
             weekday = WEEKDAY_JA[remind_at.weekday()]
             time_str = f"{remind_at.strftime('%m/%d')} ({weekday}) {remind_at.strftime('%H:%M')}"
 
-            value = f"🕐 {time_str}"
+            value = time_str
             if r.get("repeat_type") and r["repeat_type"] != "none":
-                value += f" (🔁 {format_repeat_label(r['repeat_type'], r.get('repeat_value'))})"
+                value += f" ({format_repeat_label(r['repeat_type'], r.get('repeat_value'))})"
 
             embed.add_field(
                 name=r["content"][:30],
@@ -223,7 +223,7 @@ class ConfirmReminderView(discord.ui.View):
         )
 
         if self.repeat_type and self.repeat_type != "none":
-            embed.add_field(name="繰り返し", value=f"🔁 {format_repeat_label(self.repeat_type, self.repeat_value)}", inline=True)
+            embed.add_field(name="繰り返し", value=format_repeat_label(self.repeat_type, self.repeat_value), inline=True)
 
         return embed
 
@@ -246,7 +246,7 @@ class ConfirmReminderView(discord.ui.View):
         weekday = WEEKDAY_JA[self.remind_at.weekday()]
 
         embed = discord.Embed(
-            title="✅ 登録完了",
+            title="登録完了",
             description=self.content,
             color=discord.Color.green(),
         )
@@ -391,10 +391,10 @@ class ReminderActionView(discord.ui.View):
             title=f"📝 {self.reminder['content']}",
             color=discord.Color.blue(),
         )
-        embed.add_field(name="日時", value=f"🕐 {time_str}", inline=True)
+        embed.add_field(name="日時", value=time_str, inline=True)
 
         if self.reminder.get("repeat_type") and self.reminder["repeat_type"] != "none":
-            embed.add_field(name="繰り返し", value=f"🔁 {format_repeat_label(self.reminder['repeat_type'], self.reminder.get('repeat_value'))}", inline=True)
+            embed.add_field(name="繰り返し", value=format_repeat_label(self.reminder['repeat_type'], self.reminder.get('repeat_value')), inline=True)
 
         return embed
 
@@ -408,7 +408,7 @@ class ReminderActionView(discord.ui.View):
         deleted = await delete_reminder(self.reminder_id, str(interaction.user.id))
         if deleted:
             embed = discord.Embed(
-                title="🗑️ 削除完了",
+                title="削除完了",
                 description=f"**{self.reminder['content']}** を削除しました。",
                 color=discord.Color.red(),
             )
