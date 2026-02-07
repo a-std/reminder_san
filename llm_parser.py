@@ -1,5 +1,7 @@
 """日時解析モジュール（パターンマッチ優先、LLMフォールバック）"""
 
+import asyncio
+import calendar
 import json
 import logging
 import re
@@ -220,7 +222,6 @@ def parse_repeat_pattern(user_input: str, now: datetime, tz: ZoneInfo) -> dict |
                 remind_at = make_dt(datetime(year, next_month, day, tzinfo=tz), hour, minute)
             except ValueError:
                 # 来月にもその日がない場合 → 月末に調整
-                import calendar
                 last_day = calendar.monthrange(year, next_month)[1]
                 remind_at = make_dt(datetime(year, next_month, last_day, tzinfo=tz), hour, minute)
         else:
@@ -235,7 +236,6 @@ def parse_repeat_pattern(user_input: str, now: datetime, tz: ZoneInfo) -> dict |
                     remind_at = make_dt(datetime(year, next_month, day, tzinfo=tz), hour, minute)
                 except ValueError:
                     # 来月にもその日がない場合（例: 31日で来月が30日まで）→ 月末に調整
-                    import calendar
                     last_day = calendar.monthrange(year, next_month)[1]
                     remind_at = make_dt(datetime(year, next_month, last_day, tzinfo=tz), hour, minute)
         return {"repeat_type": "monthly", "repeat_value": str(day), "remind_at": remind_at}
@@ -717,8 +717,6 @@ def extract_content(user_input: str) -> str:
 
 async def parse_datetime_llm(user_input: str, now: datetime, tz: ZoneInfo) -> datetime | None:
     """LLMで日時を解析（フォールバック用）"""
-    import asyncio
-
     weekday_ja = ["月", "火", "水", "木", "金", "土", "日"]
 
     days_until_monday = (7 - now.weekday()) % 7 or 7
@@ -734,7 +732,7 @@ async def parse_datetime_llm(user_input: str, now: datetime, tz: ZoneInfo) -> da
 
     try:
         # 同期APIをスレッドで実行し、タイムアウト付きで待機
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         response = await asyncio.wait_for(
             loop.run_in_executor(
                 None,

@@ -215,6 +215,7 @@ class ConfirmReminderView(discord.ui.View):
         repeat_value: str | None = None,
     ):
         super().__init__(timeout=180)
+        self.message = None
         self.bot_instance = bot
         self.user_id = user_id
         self.guild_id = guild_id
@@ -365,6 +366,7 @@ class ReminderListView(discord.ui.View):
 
     def __init__(self, reminders: list[dict], user_id: str, bot_instance: "ReminderBot" = None):
         super().__init__(timeout=180)
+        self.message = None
         self.user_id = user_id
         self.bot_instance = bot_instance
 
@@ -426,6 +428,7 @@ class ReminderActionView(discord.ui.View):
 
     def __init__(self, reminder_id: int, reminder: dict, bot_instance: ReminderBot):
         super().__init__(timeout=180)
+        self.message = None
         self.reminder_id = reminder_id
         self.reminder = reminder
         self.bot_instance = bot_instance

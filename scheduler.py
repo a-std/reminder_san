@@ -54,8 +54,12 @@ class ReminderScheduler:
 
     async def check_and_send_reminders(self):
         """期限が来たリマインダーをチェックして通知"""
-        now = datetime.now(self.tz)
-        due_reminders = await get_due_reminders(now)
+        try:
+            now = datetime.now(self.tz)
+            due_reminders = await get_due_reminders(now)
+        except Exception as e:
+            logger.error(f"期限チェックエラー: {e}", exc_info=True)
+            return
 
         if not due_reminders:
             return
@@ -75,8 +79,12 @@ class ReminderScheduler:
                     except Exception:
                         logger.error(f"非アクティブ化にも失敗 (ID={reminder['id']})")
 
-        tasks = [_process_one(r) for r in due_reminders]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            async with asyncio.timeout(60):
+                tasks = [_process_one(r) for r in due_reminders]
+                await asyncio.gather(*tasks, return_exceptions=True)
+        except TimeoutError:
+            logger.warning(f"リマインダー送信処理がタイムアウト（60秒、{len(due_reminders)}件）")
 
     async def send_reminder(self, reminder: dict):
         """リマインダーを送信"""
