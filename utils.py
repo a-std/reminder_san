@@ -7,6 +7,38 @@ from config import TIMEZONE
 
 WEEKDAY_JA = ["月", "火", "水", "木", "金", "土", "日"]
 
+
+def format_remaining(target: datetime) -> str:
+    """目標日時までの相対時間を表示用にフォーマット"""
+    tz = ZoneInfo(TIMEZONE)
+    now = datetime.now(tz)
+
+    if target.tzinfo is None:
+        target = target.replace(tzinfo=tz)
+
+    diff = target - now
+    total_seconds = int(diff.total_seconds())
+
+    if total_seconds < 0:
+        return "期限切れ"
+
+    days = total_seconds // 86400
+    hours = (total_seconds % 86400) // 3600
+    minutes = (total_seconds % 3600) // 60
+
+    if days > 0 and hours > 0:
+        return f"あと{days}日{hours}時間"
+    elif days > 0:
+        return f"あと{days}日"
+    elif hours > 0 and minutes > 0:
+        return f"あと{hours}時間{minutes}分"
+    elif hours > 0:
+        return f"あと{hours}時間"
+    elif minutes > 0:
+        return f"あと{minutes}分"
+    else:
+        return "まもなく"
+
 REPEAT_TYPE_MAP = {
     "daily": "毎日",
     "weekly": "毎週",

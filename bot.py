@@ -26,7 +26,7 @@ from database import (
 )
 from llm_parser import parse_reminder_input
 from scheduler import ReminderScheduler
-from utils import WEEKDAY_JA, format_repeat_label, parse_datetime_input
+from utils import WEEKDAY_JA, format_remaining, format_repeat_label, parse_datetime_input
 
 logger = logging.getLogger(__name__)
 
@@ -163,15 +163,15 @@ class ReminderBot(commands.Bot):
         for r in reminders[:10]:
             remind_at = datetime.fromisoformat(r["remind_at"])
             weekday = WEEKDAY_JA[remind_at.weekday()]
-            time_str = f"{remind_at.strftime('%m/%d')} ({weekday}) {remind_at.strftime('%H:%M')}"
+            remaining = format_remaining(remind_at)
+            time_str = f"{remind_at.strftime('%m/%d')} ({weekday}) {remind_at.strftime('%H:%M')} - {remaining}"
 
-            value = time_str
             if r.get("repeat_type") and r["repeat_type"] != "none":
-                value += f" ({format_repeat_label(r['repeat_type'], r.get('repeat_value'))})"
+                time_str += f" ({format_repeat_label(r['repeat_type'], r.get('repeat_value'))})"
 
             embed.add_field(
                 name=r["content"][:50],
-                value=value,
+                value=time_str,
                 inline=False,
             )
 
@@ -228,17 +228,17 @@ class ConfirmReminderView(discord.ui.View):
     def create_confirm_embed(self) -> discord.Embed:
         """確認用Embedを作成"""
         weekday = WEEKDAY_JA[self.remind_at.weekday()]
+        display_content = self.content[:200] + "..." if len(self.content) > 200 else self.content
+        remaining = format_remaining(self.remind_at)
 
         embed = discord.Embed(
             title="リマインダー確認",
+            description=display_content,
             color=discord.Color.yellow(),
         )
-        # Embedフィールドの文字数制限（1024文字）
-        display_content = self.content[:200] + "..." if len(self.content) > 200 else self.content
-        embed.add_field(name="内容", value=display_content, inline=False)
         embed.add_field(
             name="日時",
-            value=f"{self.remind_at.strftime('%Y/%m/%d')} ({weekday}) {self.remind_at.strftime('%H:%M')}",
+            value=f"{self.remind_at.strftime('%Y/%m/%d')} ({weekday}) {self.remind_at.strftime('%H:%M')}（{remaining}）",
             inline=True,
         )
 
@@ -265,6 +265,7 @@ class ConfirmReminderView(discord.ui.View):
         )
 
         weekday = WEEKDAY_JA[self.remind_at.weekday()]
+        remaining = format_remaining(self.remind_at)
 
         embed = discord.Embed(
             title="登録完了",
@@ -276,6 +277,11 @@ class ConfirmReminderView(discord.ui.View):
             value=f"{self.remind_at.strftime('%Y/%m/%d')} ({weekday}) {self.remind_at.strftime('%H:%M')}",
             inline=True,
         )
+        embed.add_field(name="通知まで", value=remaining, inline=True)
+
+        if self.repeat_type and self.repeat_type != "none":
+            embed.add_field(name="繰り返し", value=format_repeat_label(self.repeat_type, self.repeat_value), inline=True)
+
         embed.set_footer(text="登録しました")
 
         for item in self.children:
@@ -298,10 +304,16 @@ class ConfirmReminderView(discord.ui.View):
             await interaction.response.send_message("他のユーザーのリマインダーは操作できません。", ephemeral=True)
             return
 
-        try:
-            await interaction.message.delete()
-        except (discord.NotFound, discord.Forbidden):
-            await interaction.response.send_message("キャンセルしました。", ephemeral=True)
+        embed = discord.Embed(
+            title="キャンセル",
+            description=self.content,
+            color=discord.Color.light_grey(),
+        )
+
+        for item in self.children:
+            item.disabled = True
+
+        await interaction.response.edit_message(embed=embed, view=self)
 
     async def on_timeout(self):
         """タイムアウト時にボタンを無効化"""
@@ -371,14 +383,16 @@ class ReminderListView(discord.ui.View):
         self.bot_instance = bot_instance
 
         if reminders:
-            options = [
-                discord.SelectOption(
+            options = []
+            for r in reminders[:25]:
+                ra = datetime.fromisoformat(r["remind_at"])
+                wd = WEEKDAY_JA[ra.weekday()]
+                desc = f"{ra.strftime('%m/%d')} ({wd}) {ra.strftime('%H:%M')} - {format_remaining(ra)}"
+                options.append(discord.SelectOption(
                     label=f"{r['content'][:50]}",
-                    description=datetime.fromisoformat(r["remind_at"]).strftime("%m/%d %H:%M"),
+                    description=desc[:100],
                     value=str(r["id"]),
-                )
-                for r in reminders[:25]
-            ]
+                ))
             select = discord.ui.Select(
                 placeholder="操作するリマインダーを選択...",
                 options=options,
@@ -437,10 +451,11 @@ class ReminderActionView(discord.ui.View):
         """リマインダー詳細Embedを作成"""
         remind_at = datetime.fromisoformat(self.reminder["remind_at"])
         weekday = WEEKDAY_JA[remind_at.weekday()]
-        time_str = f"{remind_at.strftime('%m/%d')} ({weekday}) {remind_at.strftime('%H:%M')}"
+        remaining = format_remaining(remind_at)
+        time_str = f"{remind_at.strftime('%m/%d')} ({weekday}) {remind_at.strftime('%H:%M')} - {remaining}"
 
         embed = discord.Embed(
-            title=f"📝 {self.reminder['content']}",
+            title=self.reminder["content"],
             color=discord.Color.blue(),
         )
         embed.add_field(name="日時", value=time_str, inline=True)
@@ -540,7 +555,7 @@ class EditTimeModal(discord.ui.Modal, title="時刻変更"):
     """リマインダーの時刻編集モーダル"""
 
     date_input = discord.ui.TextInput(
-        label="日付 (例: 2026/01/29)",
+        label="日付 (例: 2026/01/29 または 明日)",
         placeholder="2026/01/29",
         required=True,
         max_length=20,

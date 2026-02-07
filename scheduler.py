@@ -16,7 +16,7 @@ from database import (
     get_due_reminders,
     update_reminder_time,
 )
-from utils import format_repeat_label
+from utils import WEEKDAY_JA, format_remaining, format_repeat_label
 
 logger = logging.getLogger(__name__)
 
@@ -101,18 +101,34 @@ class ReminderScheduler:
                 return
 
         # リマインド通知用Embed
+        content_title = reminder["content"][:256]
         embed = discord.Embed(
-            title="リマインダー",
-            description=reminder["content"],
-            color=discord.Color.blue(),
+            title=content_title,
+            color=discord.Color.orange(),
             timestamp=datetime.now(self.tz),
         )
         embed.set_footer(text="リマインダー通知")
 
-        # 繰り返し情報を追加
-        if reminder.get("repeat_type"):
-            repeat_text = self._format_repeat(reminder["repeat_type"], reminder.get("repeat_value"))
+        # 繰り返し情報と次回通知を追加
+        repeat_type = reminder.get("repeat_type")
+        if repeat_type and repeat_type != "none":
+            repeat_text = self._format_repeat(repeat_type, reminder.get("repeat_value"))
             embed.add_field(name="繰り返し", value=repeat_text, inline=True)
+
+            # 次回通知日時を計算して表示
+            current_time = datetime.fromisoformat(reminder["remind_at"])
+            if current_time.tzinfo is None:
+                current_time = current_time.replace(tzinfo=self.tz)
+            else:
+                current_time = current_time.astimezone(self.tz)
+            next_time = self._calculate_next_time(current_time, repeat_type, reminder.get("repeat_value"))
+            if next_time:
+                wd = WEEKDAY_JA[next_time.weekday()]
+                embed.add_field(
+                    name="次回通知",
+                    value=f"{next_time.strftime('%m/%d')} ({wd}) {next_time.strftime('%H:%M')}",
+                    inline=True,
+                )
 
         # スヌーズボタンを作成
         is_recurring = bool(reminder.get("repeat_type") and reminder["repeat_type"] != "none")
@@ -281,11 +297,11 @@ class SnoozeView(discord.ui.View):
         if not is_recurring:
             self.remove_item(self.mark_done)
 
-    @discord.ui.button(label="5分後", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="5分後", style=discord.ButtonStyle.primary)
     async def snooze_5min(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._snooze(interaction, 5)
 
-    @discord.ui.button(label="30分後", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="30分後", style=discord.ButtonStyle.primary)
     async def snooze_30min(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._snooze(interaction, 30)
 
@@ -303,7 +319,7 @@ class SnoozeView(discord.ui.View):
 
         await deactivate_reminder(self.reminder_id)
         await interaction.response.send_message(
-            "リマインダーを完了にしました。",
+            "リマインダーの繰り返しを停止しました。今後は通知されません。",
             ephemeral=True,
         )
         for item in self.children:
@@ -318,8 +334,10 @@ class SnoozeView(discord.ui.View):
         success = await snooze_reminder(self.reminder_id, new_time)
 
         if success:
+            wd = WEEKDAY_JA[new_time.weekday()]
+            remaining = format_remaining(new_time)
             await interaction.response.send_message(
-                f"リマインダーを {new_time.strftime('%m/%d %H:%M')} に再通知します。",
+                f"リマインダーを {new_time.strftime('%m/%d')} ({wd}) {new_time.strftime('%H:%M')} に再通知します。（{remaining}）",
                 ephemeral=True,
             )
         else:
