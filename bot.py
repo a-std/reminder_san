@@ -238,7 +238,7 @@ class ConfirmReminderView(discord.ui.View):
         )
         embed.add_field(
             name="日時",
-            value=f"{self.remind_at.strftime('%Y/%m/%d')} ({weekday}) {self.remind_at.strftime('%H:%M')}（{remaining}）",
+            value=f"{self.remind_at.strftime('%Y/%m/%d')} ({weekday}) {self.remind_at.strftime('%H:%M')} - {remaining}",
             inline=True,
         )
 
@@ -454,8 +454,9 @@ class ReminderActionView(discord.ui.View):
         remaining = format_remaining(remind_at)
         time_str = f"{remind_at.strftime('%m/%d')} ({weekday}) {remind_at.strftime('%H:%M')} - {remaining}"
 
+        content_title = self.reminder["content"][:253] + "..." if len(self.reminder["content"]) > 256 else self.reminder["content"]
         embed = discord.Embed(
-            title=self.reminder["content"],
+            title=content_title,
             color=discord.Color.blue(),
         )
         embed.add_field(name="日時", value=time_str, inline=True)

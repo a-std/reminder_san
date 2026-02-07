@@ -101,7 +101,7 @@ class ReminderScheduler:
                 return
 
         # リマインド通知用Embed
-        content_title = reminder["content"][:256]
+        content_title = reminder["content"][:253] + "..." if len(reminder["content"]) > 256 else reminder["content"]
         embed = discord.Embed(
             title=content_title,
             color=discord.Color.orange(),
