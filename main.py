@@ -1,11 +1,16 @@
 """リマインダーBot エントリーポイント"""
 
 import logging
+import os
 import sys
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 from config import LOGS_DIR
+
+# ロックファイル（多重起動防止用）
+LOCK_FILE = Path(__file__).parent / "bot.lock"
 
 # ログディレクトリ作成
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -47,6 +52,31 @@ llm_fallback_logger.setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def _is_process_alive(pid: int) -> bool:
+    """PIDのプロセスが生存しているか確認"""
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True  # プロセスは存在するが権限不足
+    except OSError:
+        return False
+
+
+def _acquire_lock():
+    """ロックファイルに自分のPIDを書き込む（常に上書き）"""
+    my_pid = os.getpid()
+    if LOCK_FILE.exists():
+        try:
+            old_pid = int(LOCK_FILE.read_text().strip())
+            if old_pid != my_pid and _is_process_alive(old_pid):
+                logger.warning(f"旧プロセス（PID {old_pid}）が生存中。上書きして引き継ぎます。")
+        except (ValueError, OSError):
+            pass
+    LOCK_FILE.write_text(str(my_pid))
+    logger.info(f"ロックファイル取得: PID {my_pid}")
+
+
 def main():
     """メインエントリーポイント（クラッシュ時自動再起動）"""
     import time
@@ -57,6 +87,7 @@ def main():
     last_crash = 0
 
     while True:
+        _acquire_lock()
         logger.info("リマインダーBot起動中...")
         start_time = time.time()
 

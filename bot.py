@@ -1,7 +1,10 @@
 """Discord Bot本体"""
 
+import asyncio
 import logging
+import os
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import discord
@@ -82,6 +85,30 @@ class ReminderBot(commands.Bot):
                 name="リマインダー",
             )
         )
+
+        # ロックファイル監視タスクを起動（多重起動防止）
+        if not hasattr(self, "_lock_check_started"):
+            self._lock_check_started = True
+            self.loop.create_task(self._check_lock_loop())
+
+    async def _check_lock_loop(self):
+        """ロックファイル監視: 自分のPIDでなければ自主退出"""
+        lock_path = Path(__file__).parent / "bot.lock"
+        my_pid = os.getpid()
+        while not self.is_closed():
+            await asyncio.sleep(10)
+            try:
+                if lock_path.exists():
+                    lock_pid = int(lock_path.read_text().strip())
+                    if lock_pid != my_pid:
+                        logger.warning(
+                            f"ロックファイルが別プロセス（PID {lock_pid}）に変更されました。"
+                            f"自プロセス（PID {my_pid}）を終了します。"
+                        )
+                        await self.close()
+                        return
+            except (ValueError, OSError):
+                pass
 
     async def on_message(self, message: discord.Message):
         """メッセージ受信時"""
