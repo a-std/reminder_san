@@ -1,5 +1,6 @@
 """SQLiteデータベース操作モジュール（非同期・共有接続）"""
 
+import asyncio
 import logging
 from datetime import datetime
 
@@ -9,28 +10,33 @@ from config import DB_PATH
 
 logger = logging.getLogger(__name__)
 
-# 共有接続
+# 共有接続（asyncio.Lockで競合状態を防止）
 _db: aiosqlite.Connection | None = None
+_db_lock = asyncio.Lock()
 
 
 async def _get_db() -> aiosqlite.Connection:
     """共有DB接続を取得（未接続なら接続）"""
     global _db
-    if _db is None:
-        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _db = await aiosqlite.connect(DB_PATH)
-        _db.row_factory = aiosqlite.Row
-        # WALモードで読み書きの並行性向上
-        await _db.execute("PRAGMA journal_mode=WAL")
+    async with _db_lock:
+        if _db is None:
+            DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+            _db = await aiosqlite.connect(DB_PATH)
+            _db.row_factory = aiosqlite.Row
+            # WALモードで読み書きの並行性向上
+            result = await _db.execute("PRAGMA journal_mode=WAL")
+            mode = await result.fetchone()
+            logger.info(f"SQLite journal_mode: {mode[0] if mode else 'unknown'}")
     return _db
 
 
 async def close_db():
     """共有接続を閉じる"""
     global _db
-    if _db is not None:
-        await _db.close()
-        _db = None
+    async with _db_lock:
+        if _db is not None:
+            await _db.close()
+            _db = None
 
 
 async def init_db():

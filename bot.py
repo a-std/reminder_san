@@ -103,6 +103,9 @@ class ReminderBot(commands.Bot):
 
         content = message.content.strip()
 
+        if not content:
+            return
+
         # 特殊コマンドチェック
         if content in SPECIAL_COMMANDS:
             command = SPECIAL_COMMANDS[content]
@@ -111,12 +114,18 @@ class ReminderBot(commands.Bot):
             return
 
         # LLMで解析
-        result = await parse_reminder_input(content)
+        try:
+            result = await parse_reminder_input(content)
+        except Exception as e:
+            logger.error(f"解析中にエラー: {e}", exc_info=True)
+            await message.reply(
+                "解析中にエラーが発生しました。しばらく待ってからお試しください。",
+            )
+            return
 
         if not result:
             await message.reply(
                 "解析できませんでした。「明日18時に歯医者」のような形式でお試しください。",
-                delete_after=10,
             )
             return
 
@@ -135,7 +144,8 @@ class ReminderBot(commands.Bot):
         )
 
         embed = view.create_confirm_embed()
-        await message.reply(embed=embed, view=view)
+        sent = await message.reply(embed=embed, view=view)
+        view.message = sent
 
     async def show_reminder_list(self, message: discord.Message):
         """リマインダー一覧を表示"""
@@ -146,7 +156,7 @@ class ReminderBot(commands.Bot):
             return
 
         embed = discord.Embed(
-            title="リマインダー一覧",
+            title="リマインダーリスト",
             color=discord.Color.blue(),
         )
 
@@ -160,7 +170,7 @@ class ReminderBot(commands.Bot):
                 value += f" ({format_repeat_label(r['repeat_type'], r.get('repeat_value'))})"
 
             embed.add_field(
-                name=r["content"][:30],
+                name=r["content"][:50],
                 value=value,
                 inline=False,
             )
@@ -169,13 +179,20 @@ class ReminderBot(commands.Bot):
             embed.set_footer(text=f"他 {len(reminders) - 10} 件")
 
         view = ReminderListView(reminders[:25], str(message.author.id), bot_instance=self)
-        await message.reply(embed=embed, view=view)
+        sent = await message.reply(embed=embed, view=view)
+        view.message = sent
 
     async def close(self):
         """Bot終了時"""
-        if self.scheduler:
-            await self.scheduler.stop()
-        await close_db()
+        try:
+            if self.scheduler:
+                await self.scheduler.stop()
+        except Exception as e:
+            logger.error(f"スケジューラ停止エラー: {e}")
+        try:
+            await close_db()
+        except Exception as e:
+            logger.error(f"DB クローズエラー: {e}")
         await super().close()
 
 
@@ -197,7 +214,7 @@ class ConfirmReminderView(discord.ui.View):
         repeat_type: str | None = None,
         repeat_value: str | None = None,
     ):
-        super().__init__(timeout=300)
+        super().__init__(timeout=180)
         self.bot_instance = bot
         self.user_id = user_id
         self.guild_id = guild_id
@@ -212,10 +229,12 @@ class ConfirmReminderView(discord.ui.View):
         weekday = WEEKDAY_JA[self.remind_at.weekday()]
 
         embed = discord.Embed(
-            title="📝 リマインダー確認",
+            title="リマインダー確認",
             color=discord.Color.yellow(),
         )
-        embed.add_field(name="内容", value=self.content, inline=False)
+        # Embedフィールドの文字数制限（1024文字）
+        display_content = self.content[:200] + "..." if len(self.content) > 200 else self.content
+        embed.add_field(name="内容", value=display_content, inline=False)
         embed.add_field(
             name="日時",
             value=f"{self.remind_at.strftime('%Y/%m/%d')} ({weekday}) {self.remind_at.strftime('%H:%M')}",
@@ -225,6 +244,7 @@ class ConfirmReminderView(discord.ui.View):
         if self.repeat_type and self.repeat_type != "none":
             embed.add_field(name="繰り返し", value=format_repeat_label(self.repeat_type, self.repeat_value), inline=True)
 
+        embed.set_footer(text="3分以内にボタンを押してください")
         return embed
 
     @discord.ui.button(label="登録", style=discord.ButtonStyle.success)
@@ -277,7 +297,20 @@ class ConfirmReminderView(discord.ui.View):
             await interaction.response.send_message("他のユーザーのリマインダーは操作できません。", ephemeral=True)
             return
 
-        await interaction.message.delete()
+        try:
+            await interaction.message.delete()
+        except (discord.NotFound, discord.Forbidden):
+            await interaction.response.send_message("キャンセルしました。", ephemeral=True)
+
+    async def on_timeout(self):
+        """タイムアウト時にボタンを無効化"""
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
 
 async def _resolve_datetime(date_str: str, time_str: str) -> datetime | None:
@@ -331,7 +364,7 @@ class ReminderListView(discord.ui.View):
     """リマインダー一覧用View"""
 
     def __init__(self, reminders: list[dict], user_id: str, bot_instance: "ReminderBot" = None):
-        super().__init__(timeout=300)
+        super().__init__(timeout=180)
         self.user_id = user_id
         self.bot_instance = bot_instance
 
@@ -345,13 +378,14 @@ class ReminderListView(discord.ui.View):
                 for r in reminders[:25]
             ]
             select = discord.ui.Select(
-                placeholder="削除するリマインダーを選択...",
+                placeholder="操作するリマインダーを選択...",
                 options=options,
             )
-            select.callback = self.delete_callback
+            select.callback = self.select_callback
             self.add_item(select)
 
-    async def delete_callback(self, interaction: discord.Interaction):
+    async def select_callback(self, interaction: discord.Interaction):
+        """選択後にReminderActionViewで詳細操作を表示"""
         if str(interaction.user.id) != self.user_id:
             await interaction.response.send_message("他のユーザーのリマインダーは操作できません。", ephemeral=True)
             return
@@ -361,15 +395,30 @@ class ReminderListView(discord.ui.View):
             await interaction.response.send_message("選択されていません。", ephemeral=True)
             return
 
-        await interaction.response.defer()
+        try:
+            reminder_id = int(values[0])
+        except (ValueError, IndexError):
+            await interaction.response.send_message("無効な選択です。", ephemeral=True)
+            return
 
-        reminder_id = int(values[0])
-        deleted = await delete_reminder(reminder_id, self.user_id)
+        reminder = await get_reminder_by_id(reminder_id)
+        if not reminder:
+            await interaction.response.send_message("リマインダーが見つかりません。", ephemeral=True)
+            return
 
-        if deleted:
-            await interaction.followup.send("削除しました。")
-        else:
-            await interaction.followup.send("削除に失敗しました。", ephemeral=True)
+        action_view = ReminderActionView(reminder_id, reminder, self.bot_instance)
+        embed = action_view.create_embed()
+        await interaction.response.send_message(embed=embed, view=action_view, ephemeral=True)
+
+    async def on_timeout(self):
+        """タイムアウト時にセレクトメニューを無効化"""
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
 
 class ReminderActionView(discord.ui.View):
@@ -437,6 +486,16 @@ class ReminderActionView(discord.ui.View):
 
         modal = EditTimeModal(self.reminder_id, self.reminder["remind_at"], self.bot_instance)
         await interaction.response.send_modal(modal)
+
+    async def on_timeout(self):
+        """タイムアウト時にボタンを無効化"""
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
 
 class EditContentModal(discord.ui.Modal, title="タイトル変更"):

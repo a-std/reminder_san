@@ -216,16 +216,28 @@ def parse_repeat_pattern(user_input: str, now: datetime, tz: ZoneInfo) -> dict |
             if next_month > 12:
                 next_month = 1
                 year += 1
-            remind_at = make_dt(datetime(year, next_month, day, tzinfo=tz), hour, minute)
+            try:
+                remind_at = make_dt(datetime(year, next_month, day, tzinfo=tz), hour, minute)
+            except ValueError:
+                # 来月にもその日がない場合 → 月末に調整
+                import calendar
+                last_day = calendar.monthrange(year, next_month)[1]
+                remind_at = make_dt(datetime(year, next_month, last_day, tzinfo=tz), hour, minute)
         else:
-            if remind_at <= now:
+            if remind_at < now:
                 # 来月
                 next_month = now.month + 1
                 year = now.year
                 if next_month > 12:
                     next_month = 1
                     year += 1
-                remind_at = make_dt(datetime(year, next_month, day, tzinfo=tz), hour, minute)
+                try:
+                    remind_at = make_dt(datetime(year, next_month, day, tzinfo=tz), hour, minute)
+                except ValueError:
+                    # 来月にもその日がない場合（例: 31日で来月が30日まで）→ 月末に調整
+                    import calendar
+                    last_day = calendar.monthrange(year, next_month)[1]
+                    remind_at = make_dt(datetime(year, next_month, last_day, tzinfo=tz), hour, minute)
         return {"repeat_type": "monthly", "repeat_value": str(day), "remind_at": remind_at}
 
     # 隔週X曜
@@ -264,7 +276,7 @@ def parse_repeat_pattern(user_input: str, now: datetime, tz: ZoneInfo) -> dict |
         hour = extract_hour(time_text.replace('毎朝', ''), default=8)
         minute = extract_minute(time_text)
         remind_at = make_dt(now, hour, minute)
-        if remind_at <= now:
+        if remind_at < now:
             remind_at += timedelta(days=1)
         return {"repeat_type": "daily", "repeat_value": None, "remind_at": remind_at}
 
@@ -273,7 +285,7 @@ def parse_repeat_pattern(user_input: str, now: datetime, tz: ZoneInfo) -> dict |
         hour = extract_hour(time_text.replace('毎晩', ''), default=20)
         minute = extract_minute(time_text)
         remind_at = make_dt(now, hour, minute)
-        if remind_at <= now:
+        if remind_at < now:
             remind_at += timedelta(days=1)
         return {"repeat_type": "daily", "repeat_value": None, "remind_at": remind_at}
 
@@ -282,7 +294,7 @@ def parse_repeat_pattern(user_input: str, now: datetime, tz: ZoneInfo) -> dict |
         hour = extract_hour(time_text.replace('毎夕方', '').replace('毎夕', ''), default=17)
         minute = extract_minute(time_text)
         remind_at = make_dt(now, hour, minute)
-        if remind_at <= now:
+        if remind_at < now:
             remind_at += timedelta(days=1)
         return {"repeat_type": "daily", "repeat_value": None, "remind_at": remind_at}
 
@@ -291,7 +303,7 @@ def parse_repeat_pattern(user_input: str, now: datetime, tz: ZoneInfo) -> dict |
         hour = extract_hour(time_text, default=9)
         minute = extract_minute(time_text)
         remind_at = make_dt(now, hour, minute)
-        if remind_at <= now:
+        if remind_at < now:
             remind_at += timedelta(days=1)
         return {"repeat_type": "daily", "repeat_value": None, "remind_at": remind_at}
 
@@ -300,7 +312,7 @@ def parse_repeat_pattern(user_input: str, now: datetime, tz: ZoneInfo) -> dict |
         hour = extract_hour(time_text, default=9)
         minute = extract_minute(time_text)
         remind_at = make_dt(now, hour, minute)
-        if remind_at <= now or now.weekday() >= 5:
+        if remind_at < now or now.weekday() >= 5:
             # 次の平日を探す
             remind_at += timedelta(days=1)
             while remind_at.weekday() >= 5:
@@ -570,14 +582,14 @@ def parse_datetime_pattern(user_input: str, now: datetime, tz: ZoneInfo) -> date
     # 正午 / お昼
     if '正午' in text or 'お昼' in text:
         result = now.replace(hour=12, minute=0, second=0, microsecond=0)
-        if result <= now:
+        if result < now:
             result += timedelta(days=1)
         return result
 
     # 深夜
     if '深夜' in text:
         result = now.replace(hour=23, minute=0, second=0, microsecond=0)
-        if result <= now:
+        if result < now:
             result += timedelta(days=1)
         return result
 
@@ -588,7 +600,7 @@ def parse_datetime_pattern(user_input: str, now: datetime, tz: ZoneInfo) -> date
         hour = hour + 12 if hour < 12 else hour
         minute = extract_minute(text)
         result = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if result <= now:
+        if result < now:
             result += timedelta(days=1)
         return result
 
@@ -597,7 +609,7 @@ def parse_datetime_pattern(user_input: str, now: datetime, tz: ZoneInfo) -> date
         hour = int(m.group(1))
         minute = extract_minute(text)
         result = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if result <= now:
+        if result < now:
             result += timedelta(days=1)
         return result
 
@@ -606,7 +618,7 @@ def parse_datetime_pattern(user_input: str, now: datetime, tz: ZoneInfo) -> date
     if m and not any(w in text for w in ['明日', '明後日', '来週', '今週', '次の', '月', '今度']):
         hour = int(m.group(1))
         result = now.replace(hour=hour, minute=30, second=0, microsecond=0)
-        if result <= now:
+        if result < now:
             result += timedelta(days=1)
         return result
 
@@ -615,7 +627,7 @@ def parse_datetime_pattern(user_input: str, now: datetime, tz: ZoneInfo) -> date
     if m and not any(w in text for w in ['明日', '明後日', '来週', '今週', '次の', '月', '今度']):
         hour, minute = int(m.group(1)), int(m.group(2))
         result = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if result <= now:
+        if result < now:
             result += timedelta(days=1)
         return result
 
@@ -624,7 +636,7 @@ def parse_datetime_pattern(user_input: str, now: datetime, tz: ZoneInfo) -> date
     if m and not any(w in text for w in ['明日', '明後日', '来週', '今週', '次の', '月', '今度', '午前', '午後']):
         hour = int(m.group(1))
         result = now.replace(hour=hour, minute=0, second=0, microsecond=0)
-        if result <= now:
+        if result < now:
             result += timedelta(days=1)
         return result
 
@@ -633,7 +645,7 @@ def parse_datetime_pattern(user_input: str, now: datetime, tz: ZoneInfo) -> date
     for word, hour in time_words.items():
         if word in text:
             result = now.replace(hour=hour, minute=0, second=0, microsecond=0)
-            if result <= now:
+            if result < now:
                 result += timedelta(days=1)
             return result
 
@@ -705,6 +717,8 @@ def extract_content(user_input: str) -> str:
 
 async def parse_datetime_llm(user_input: str, now: datetime, tz: ZoneInfo) -> datetime | None:
     """LLMで日時を解析（フォールバック用）"""
+    import asyncio
+
     weekday_ja = ["月", "火", "水", "木", "金", "土", "日"]
 
     days_until_monday = (7 - now.weekday()) % 7 or 7
@@ -719,11 +733,20 @@ async def parse_datetime_llm(user_input: str, now: datetime, tz: ZoneInfo) -> da
 入力: {user_input}"""
 
     try:
-        response = _get_client().chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[{"role": "user", "content": prompt}],
-            tools=[PARSE_DATETIME_TOOL],
-            tool_choice={"type": "function", "function": {"name": "set_datetime"}},
+        # 同期APIをスレッドで実行し、タイムアウト付きで待機
+        loop = asyncio.get_event_loop()
+        response = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                lambda: _get_client().chat.completions.create(
+                    model="llama-3.1-8b-instant",
+                    messages=[{"role": "user", "content": prompt}],
+                    tools=[PARSE_DATETIME_TOOL],
+                    tool_choice={"type": "function", "function": {"name": "set_datetime"}},
+                    timeout=10,
+                ),
+            ),
+            timeout=15.0,
         )
 
         message = response.choices[0].message
@@ -737,7 +760,11 @@ async def parse_datetime_llm(user_input: str, now: datetime, tz: ZoneInfo) -> da
                     result = result.replace(tzinfo=tz)
                 return result
             except ValueError:
+                logger.warning(f"LLM応答の日時パース失敗: {dt_str}")
                 return None
+        return None
+    except asyncio.TimeoutError:
+        logger.error(f"LLM解析タイムアウト: {user_input}")
         return None
     except Exception as e:
         logger.error(f"LLM解析エラー: {e}")

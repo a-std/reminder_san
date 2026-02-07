@@ -1,5 +1,6 @@
 """APSchedulerでリマインド通知を管理するモジュール"""
 
+import asyncio
 import logging
 import re
 from datetime import datetime, timedelta
@@ -18,6 +19,9 @@ from database import (
 from utils import format_repeat_label
 
 logger = logging.getLogger(__name__)
+
+# 同時通知の並行数制限
+MAX_CONCURRENT_SENDS = 3
 
 
 class ReminderScheduler:
@@ -40,9 +44,12 @@ class ReminderScheduler:
         self.scheduler.start()
         logger.info(f"スケジューラ開始（チェック間隔: {SCHEDULER_CHECK_INTERVAL_SEC}秒）")
 
+        # 起動時に即座にチェック（Bot停止中に期限を迎えたリマインダーを拾う）
+        await self.check_and_send_reminders()
+
     async def stop(self):
         """スケジューラを停止"""
-        self.scheduler.shutdown(wait=False)
+        self.scheduler.shutdown(wait=True)
         logger.info("スケジューラ停止")
 
     async def check_and_send_reminders(self):
@@ -53,12 +60,23 @@ class ReminderScheduler:
         if not due_reminders:
             return
 
-        for reminder in due_reminders:
-            try:
-                await self.send_reminder(reminder)
-                await self.handle_after_send(reminder)
-            except Exception as e:
-                logger.error(f"リマインダー送信エラー (ID={reminder['id']}): {e}")
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_SENDS)
+
+        async def _process_one(reminder: dict):
+            async with semaphore:
+                try:
+                    await self.send_reminder(reminder)
+                    await self.handle_after_send(reminder)
+                except Exception as e:
+                    logger.error(f"リマインダー送信エラー (ID={reminder['id']}): {e}", exc_info=True)
+                    # 送信後処理で失敗した場合もデータ不整合を防ぐ
+                    try:
+                        await deactivate_reminder(reminder["id"])
+                    except Exception:
+                        logger.error(f"非アクティブ化にも失敗 (ID={reminder['id']})")
+
+        tasks = [_process_one(r) for r in due_reminders]
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def send_reminder(self, reminder: dict):
         """リマインダーを送信"""
@@ -114,14 +132,23 @@ class ReminderScheduler:
             # 繰り返しあり → 次回日時を計算
             current_time = datetime.fromisoformat(reminder["remind_at"])
             if current_time.tzinfo is None:
+                # naive datetimeをタイムゾーン付きに正しく変換
                 current_time = current_time.replace(tzinfo=self.tz)
+            else:
+                # タイムゾーン付きの場合は正しく変換
+                current_time = current_time.astimezone(self.tz)
 
             next_time = self._calculate_next_time(current_time, repeat_type, reminder.get("repeat_value"))
 
             if next_time:
-                await update_reminder_time(reminder["id"], next_time)
-                logger.info(f"次回リマインダー更新: ID={reminder['id']}, next={next_time}")
+                success = await update_reminder_time(reminder["id"], next_time)
+                if success:
+                    logger.info(f"次回リマインダー更新: ID={reminder['id']}, next={next_time}")
+                else:
+                    logger.error(f"次回リマインダー更新失敗: ID={reminder['id']}")
+                    await deactivate_reminder(reminder["id"])
             else:
+                logger.warning(f"次回日時計算不能: ID={reminder['id']}, type={repeat_type}")
                 await deactivate_reminder(reminder["id"])
 
     def _calculate_next_time(
