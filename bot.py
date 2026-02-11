@@ -147,12 +147,14 @@ class ReminderBot(commands.Bot):
             logger.error(f"解析中にエラー: {e}", exc_info=True)
             await message.reply(
                 "解析中にエラーが発生しました。しばらく待ってからお試しください。",
+                mention_author=False,
             )
             return
 
         if not result:
             await message.reply(
                 "解析できませんでした。「明日18時に歯医者」のような形式でお試しください。",
+                mention_author=False,
             )
             return
 
@@ -171,7 +173,7 @@ class ReminderBot(commands.Bot):
         )
 
         embed = view.create_confirm_embed()
-        sent = await message.reply(embed=embed, view=view)
+        sent = await message.reply(embed=embed, view=view, mention_author=False)
         view.message = sent
 
     async def show_reminder_list(self, message: discord.Message):
@@ -179,7 +181,7 @@ class ReminderBot(commands.Bot):
         reminders = await get_user_reminders(str(message.author.id))
 
         if not reminders:
-            await message.reply("登録済みのリマインダーはありません。")
+            await message.reply("登録済みのリマインダーはありません。", mention_author=False)
             return
 
         embed = discord.Embed(
@@ -206,7 +208,7 @@ class ReminderBot(commands.Bot):
             embed.set_footer(text=f"他 {len(reminders) - 10} 件")
 
         view = ReminderListView(reminders[:25], str(message.author.id), bot_instance=self)
-        sent = await message.reply(embed=embed, view=view)
+        sent = await message.reply(embed=embed, view=view, mention_author=False)
         view.message = sent
 
     async def close(self):

@@ -101,9 +101,9 @@ class ReminderScheduler:
                 return
 
         # リマインド通知用Embed
-        content_title = reminder["content"][:253] + "..." if len(reminder["content"]) > 256 else reminder["content"]
         embed = discord.Embed(
-            title=content_title,
+            title="リマインダー",
+            description=reminder["content"],
             color=discord.Color.orange(),
             timestamp=datetime.now(self.tz),
         )
