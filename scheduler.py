@@ -136,7 +136,6 @@ class ReminderScheduler:
 
         try:
             await channel.send(
-                content=f"<@{user_id}>",
                 embed=embed,
                 view=view,
             )
