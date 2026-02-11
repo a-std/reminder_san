@@ -102,7 +102,6 @@ class ReminderScheduler:
 
         # リマインド通知用Embed
         embed = discord.Embed(
-            title="リマインダー",
             description=reminder["content"],
             color=discord.Color.orange(),
             timestamp=datetime.now(self.tz),
