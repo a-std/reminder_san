@@ -53,9 +53,17 @@ async def init_db():
             repeat_type TEXT,
             repeat_value TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            is_active INTEGER DEFAULT 1
+            is_active INTEGER DEFAULT 1,
+            error_count INTEGER DEFAULT 0
         )
     """)
+    # 既存DBへのマイグレーション: error_count カラムが無ければ追加
+    try:
+        await db.execute("ALTER TABLE reminders ADD COLUMN error_count INTEGER DEFAULT 0")
+        await db.commit()
+        logger.info("マイグレーション: error_count カラムを追加")
+    except Exception:
+        pass  # カラムが既に存在する場合は無視
     await db.execute("CREATE INDEX IF NOT EXISTS idx_remind_at ON reminders(remind_at)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_user_id ON reminders(user_id)")
     await db.execute(
@@ -147,6 +155,34 @@ async def deactivate_reminder(reminder_id: int) -> bool:
     )
     await db.commit()
     return cursor.rowcount > 0
+
+
+async def increment_error_count(reminder_id: int) -> int:
+    """送信エラーカウントを1増やし、新しいカウントを返す"""
+    db = await _get_db()
+    cursor = await db.execute(
+        "UPDATE reminders SET error_count = error_count + 1 WHERE id = ?",
+        (reminder_id,),
+    )
+    await db.commit()
+    if cursor.rowcount == 0:
+        return 0
+    row_cursor = await db.execute(
+        "SELECT error_count FROM reminders WHERE id = ?",
+        (reminder_id,),
+    )
+    row = await row_cursor.fetchone()
+    return row[0] if row else 0
+
+
+async def reset_error_count(reminder_id: int) -> None:
+    """送信エラーカウントをリセットする"""
+    db = await _get_db()
+    await db.execute(
+        "UPDATE reminders SET error_count = 0 WHERE id = ?",
+        (reminder_id,),
+    )
+    await db.commit()
 
 
 async def delete_reminder(reminder_id: int, user_id: str) -> bool:

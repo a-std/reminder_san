@@ -14,6 +14,8 @@ from config import SCHEDULER_CHECK_INTERVAL_SEC, TIMEZONE
 from database import (
     deactivate_reminder,
     get_due_reminders,
+    increment_error_count,
+    reset_error_count,
     update_reminder_time,
 )
 from utils import WEEKDAY_JA, format_remaining, format_repeat_label
