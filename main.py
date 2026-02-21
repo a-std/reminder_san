@@ -86,6 +86,13 @@ def main():
     retry_count = 0
     last_crash = 0
 
+    # ヘルスエンドポイント起動
+    try:
+        from health_server import start_health_server
+        start_health_server(port=18791)
+    except Exception as e:
+        logger.warning(f"Health server failed to start: {e}")
+
     while True:
         _acquire_lock()
         logger.info("リマインダーBot起動中...")
