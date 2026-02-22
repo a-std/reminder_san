@@ -1,11 +1,32 @@
 name: CI
-on: [push, pull_request]
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
 jobs:
-  lint:
+  lint-and-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: '3.13' }
-      - run: pip install -r requirements.txt
-      - run: python -c "import main" || true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install ruff pytest
+
+      - name: Lint with Ruff
+        run: ruff check *.py
+
+      - name: Run tests
+        run: pytest test_parser.py -v --tb=short
+        env:
+          DISCORD_BOT_TOKEN: "test"
+          GROQ_API_KEY: "test"
