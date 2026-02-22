@@ -227,7 +227,25 @@ class ReminderBot(commands.Bot):
 bot = ReminderBot()
 
 
-class ConfirmReminderView(discord.ui.View):
+class TimeoutDisableView(discord.ui.View):
+    """タイムアウト時にボタン/セレクトを無効化する共通基底クラス"""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.message = None
+
+    async def on_timeout(self):
+        """タイムアウト時にUI要素を無効化"""
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass
+
+
+class ConfirmReminderView(TimeoutDisableView):
     """リマインダー確認用View"""
 
     def __init__(
@@ -342,15 +360,6 @@ class ConfirmReminderView(discord.ui.View):
 
         await interaction.response.edit_message(embed=embed, view=self)
 
-    async def on_timeout(self):
-        """タイムアウト時にボタンを無効化"""
-        for item in self.children:
-            item.disabled = True
-        if self.message:
-            try:
-                await self.message.edit(view=self)
-            except (discord.NotFound, discord.HTTPException):
-                pass
 
 
 async def _resolve_datetime(date_str: str, time_str: str) -> datetime | None:
@@ -400,12 +409,11 @@ class DateTimeModal(discord.ui.Modal, title="日時変更"):
         await interaction.response.edit_message(embed=embed, view=self.parent_view)
 
 
-class ReminderListView(discord.ui.View):
+class ReminderListView(TimeoutDisableView):
     """リマインダー一覧用View"""
 
     def __init__(self, reminders: list[dict], user_id: str, bot_instance: "ReminderBot" = None):
         super().__init__(timeout=180)
-        self.message = None
         self.user_id = user_id
         self.bot_instance = bot_instance
 
@@ -453,23 +461,13 @@ class ReminderListView(discord.ui.View):
         embed = action_view.create_embed()
         await interaction.response.send_message(embed=embed, view=action_view, ephemeral=True)
 
-    async def on_timeout(self):
-        """タイムアウト時にセレクトメニューを無効化"""
-        for item in self.children:
-            item.disabled = True
-        if self.message:
-            try:
-                await self.message.edit(view=self)
-            except (discord.NotFound, discord.HTTPException):
-                pass
 
 
-class ReminderActionView(discord.ui.View):
+class ReminderActionView(TimeoutDisableView):
     """リマインダー操作用View（ephemeral、セレクト選択後に表示）"""
 
     def __init__(self, reminder_id: int, reminder: dict, bot_instance: ReminderBot):
         super().__init__(timeout=180)
-        self.message = None
         self.reminder_id = reminder_id
         self.reminder = reminder
         self.bot_instance = bot_instance
@@ -532,16 +530,6 @@ class ReminderActionView(discord.ui.View):
 
         modal = EditTimeModal(self.reminder_id, self.reminder["remind_at"], self.bot_instance)
         await interaction.response.send_modal(modal)
-
-    async def on_timeout(self):
-        """タイムアウト時にボタンを無効化"""
-        for item in self.children:
-            item.disabled = True
-        if self.message:
-            try:
-                await self.message.edit(view=self)
-            except (discord.NotFound, discord.HTTPException):
-                pass
 
 
 class EditContentModal(discord.ui.Modal, title="タイトル変更"):
