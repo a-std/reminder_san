@@ -100,7 +100,7 @@ def main():
     while True:
         _acquire_lock()
         logger.info("リマインダーBot起動中...")
-        start_time = time.time()
+        start_time = time.time()  # noqa: F841
 
         try:
             from bot import run_bot

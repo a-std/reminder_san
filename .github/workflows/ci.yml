@@ -23,7 +23,7 @@ jobs:
           pip install ruff pytest
 
       - name: Lint with Ruff
-        run: ruff check *.py
+        run: ruff check *.py --select E,F,W --ignore E501
 
       - name: Run tests
         run: pytest test_parser.py -v --tb=short

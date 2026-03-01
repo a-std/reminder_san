@@ -277,7 +277,7 @@ class ConfirmReminderView(discord.ui.View):
             await interaction.response.send_message("他のユーザーのリマインダーは操作できません。", ephemeral=True)
             return
 
-        reminder_id = await create_reminder(
+        reminder_id = await create_reminder(  # noqa: F841
             user_id=self.user_id,
             guild_id=self.guild_id,
             channel_id=self.channel_id,
