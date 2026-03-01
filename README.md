@@ -22,8 +22,8 @@ The bot parses the date/time expression, confirms with the user, and sends a rem
 ## ✨ Features
 
 - **Natural language parsing** — Understands Japanese time expressions like `明日の朝9時`, `30分後`, `来週月曜`
-- **LLM-powered parsing** — Uses Groq (LLaMA) to handle ambiguous or complex expressions
-- **Recurring reminders** — Supports daily, weekly, and custom recurring schedules
+- **LLM-powered parsing** — Uses Groq API with tool_call for ambiguous or complex expressions
+- **Recurring reminders** — Supports daily, weekly, biweekly, weekdays, and monthly (Nth weekday) schedules
 - **Confirmation flow** — Confirms parsed time with the user before setting the reminder
 - **Persistent storage** — Reminders survive bot restarts via SQLite
 - **Timezone-aware** — All times handled in Asia/Tokyo (JST)
@@ -32,12 +32,15 @@ The bot parses the date/time expression, confirms with the user, and sends a rem
 
 ```
 reminder_san/
-├── main.py              # Discord bot entry point
-├── parser.py            # Natural language date/time parser
-├── scheduler.py         # Reminder scheduling and dispatch
-├── database.py          # SQLite persistence layer
-├── llm.py               # Groq LLM integration for NLP
-├── test_parser.py       # Unit tests for parser
+├── main.py              # Entry point (logging, crash recovery)
+├── bot.py               # Discord bot (message handling, Views/Modals)
+├── config.py            # Environment variables and constants
+├── database.py          # SQLite persistence (aiosqlite, WAL mode)
+├── scheduler.py         # APScheduler reminder dispatch (30s interval)
+├── llm_parser.py        # NL date/time parser (regex + Groq LLM fallback)
+├── utils.py             # Shared utilities
+├── health_server.py     # Health check endpoint
+├── test_parser.py       # Parser tests
 └── requirements.txt
 ```
 
@@ -84,31 +87,24 @@ The parser uses a two-stage approach:
 
 1. **Rule-based parsing** — Handles common, unambiguous patterns with regex
    - `n分後`, `n時間後`, `明日`, `来週月曜`, etc.
-2. **LLM fallback** — For complex or ambiguous expressions, delegates to Groq LLaMA
+2. **LLM fallback** (`llm_parser.py`) — For complex or ambiguous expressions, delegates to Groq API using tool_call to return structured ISO 8601 dates
    - `今週中に`, `週明けまでに`, `夕方ごろ`, etc.
-
-```python
-# Example parser output
-parse_reminder("明日の朝9時に朝会のリマインドして")
-# → ReminderRequest(
-#       message="朝会のリマインド",
-#       trigger_at=datetime(2026, 2, 24, 9, 0, tzinfo=JST),
-#       recurring=None
-#   )
-```
+   - Fallback usage is logged to `logs/llm_fallback.log`
 
 ## 🗄 Database Schema
 
 ```sql
 CREATE TABLE reminders (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id     TEXT NOT NULL,
-    channel_id  TEXT NOT NULL,
-    message     TEXT NOT NULL,
-    trigger_at  TEXT NOT NULL,       -- ISO 8601 in JST
-    recurring   TEXT,                -- 'daily' | 'weekly' | NULL
-    created_at  TEXT NOT NULL,
-    fired       INTEGER DEFAULT 0
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      TEXT NOT NULL,
+    guild_id     TEXT,
+    channel_id   TEXT NOT NULL,
+    content      TEXT NOT NULL,
+    remind_at    DATETIME NOT NULL,
+    repeat_type  TEXT,        -- daily/weekly/biweekly/weekdays/monthly/none
+    repeat_value TEXT,        -- for monthly: day number or "第N曜日"
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    is_active    INTEGER DEFAULT 1
 );
 ```
 
@@ -141,7 +137,8 @@ WantedBy=multi-user.target
 ## 🧪 Testing
 
 ```bash
-pytest test_parser.py -v
+# Custom test runner (not pytest-compatible)
+python test_parser.py
 ```
 
 ## 📦 Dependencies
@@ -149,10 +146,11 @@ pytest test_parser.py -v
 | Package | Purpose |
 |---|---|
 | `discord.py` | Discord bot framework |
-| `groq` | LLM-powered NLP (LLaMA 3) |
-| `python-dateutil` | Date parsing utilities |
-| `apscheduler` | Reminder scheduling |
+| `openai` | Groq LLM API (OpenAI-compatible) |
+| `aiosqlite` | Async SQLite access (WAL mode) |
+| `APScheduler` | Reminder scheduling |
 | `python-dotenv` | Environment variable management |
+| `pytz` | Timezone handling |
 
 ## 📄 License
 
