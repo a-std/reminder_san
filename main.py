@@ -63,8 +63,11 @@ def _is_process_alive(pid: int) -> bool:
         return False
 
 
+PID_FILE = Path(__file__).parent / "bot.pid"
+
+
 def _acquire_lock():
-    """ロックファイルに自分のPIDを書き込む（常に上書き）"""
+    """ロックファイルに自分のPIDを書き込む（常に上書き）。bot.pidも更新してwatchdogと同期する。"""
     my_pid = os.getpid()
     if LOCK_FILE.exists():
         try:
@@ -74,6 +77,7 @@ def _acquire_lock():
         except (ValueError, OSError):
             pass
     LOCK_FILE.write_text(str(my_pid))
+    PID_FILE.write_text(str(my_pid))
     logger.info(f"ロックファイル取得: PID {my_pid}")
 
 

@@ -223,10 +223,6 @@ class ReminderBot(commands.Bot):
         await super().close()
 
 
-# Botインスタンス
-bot = ReminderBot()
-
-
 class ConfirmReminderView(discord.ui.View):
     """リマインダー確認用View"""
 
@@ -627,5 +623,6 @@ class EditTimeModal(discord.ui.Modal, title="時刻変更"):
 
 
 def run_bot():
-    """Botを起動"""
+    """Botを起動（毎回新しいインスタンスを生成してセッション汚染を防ぐ）"""
+    bot = ReminderBot()
     bot.run(DISCORD_BOT_TOKEN)

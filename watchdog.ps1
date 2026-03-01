@@ -1,14 +1,16 @@
-﻿# ReminderBot Watchdog
-# PIDファイルでプロセス生存を判定（WMI CommandLineはpythonw.exeで空になるため不使用）
+# ReminderBot Watchdog
+# bot.lock（main.pyが管理）でプロセス生存を判定
 $pythonw = "C:\Users\asakawagmk\AppData\Local\Programs\Python\Python313\pythonw.exe"
 $workDir = "C:\reminder_san"
+$lockFile = "C:\reminder_san\bot.lock"
 $pidFile = "C:\reminder_san\bot.pid"
 $logFile = "C:\reminder_san\logs\watchdog.log"
 
 $running = $false
 
-if (Test-Path $pidFile) {
-    $pidText = (Get-Content $pidFile -Raw).Trim()
+# bot.lockを正とする（main.pyが起動時に書き込む）
+if (Test-Path $lockFile) {
+    $pidText = (Get-Content $lockFile -Raw).Trim()
     if ($pidText -match '^\d+$') {
         $botPid = [int]$pidText
         try {

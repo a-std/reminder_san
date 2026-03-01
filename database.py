@@ -62,7 +62,7 @@ async def init_db():
         await db.execute("ALTER TABLE reminders ADD COLUMN error_count INTEGER DEFAULT 0")
         await db.commit()
         logger.info("マイグレーション: error_count カラムを追加")
-    except Exception:
+    except aiosqlite.OperationalError:
         pass  # カラムが既に存在する場合は無視
     await db.execute("CREATE INDEX IF NOT EXISTS idx_remind_at ON reminders(remind_at)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_user_id ON reminders(user_id)")
